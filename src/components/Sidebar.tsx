@@ -1,7 +1,7 @@
 'use client'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Home, Calendar, Settings, DollarSign, Map } from 'lucide-react'
+import { Home, Calendar, Settings, DollarSign, Map, Users } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 
@@ -43,12 +43,14 @@ export default function Sidebar() {
     { href: '/price',    label: 'เช็คราคา', icon: DollarSign, adminOnly: true },
     { href: '/calendar', label: 'ตารางงาน', icon: Calendar },
     { href: '/map',      label: 'แผนที่',   icon: Map },
+    { href: '/admin-management', label: 'จัดการแอดมิน', icon: Users, ownerOnly: true },
     { href: '/settings', label: 'ตั้งค่า',  icon: Settings },
   ]
 
-  const visibleNav = NAV.filter(({ adminOnly }) => {
-    if (loading && adminOnly) return false
-    if (adminOnly && role !== 'admin') return false
+  const visibleNav = NAV.filter(({ adminOnly, ownerOnly }) => {
+    if (loading) return false
+    if (ownerOnly && role !== 'owner') return false
+    if (adminOnly && role !== 'admin' && role !== 'owner') return false
     return true
   })
 

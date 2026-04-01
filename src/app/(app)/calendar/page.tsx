@@ -24,6 +24,7 @@ interface RawWorkSchedule {
     employee_ids: string[] | null;
     start_photo_url?: string | null;
     complete_photo_url?: string | null;
+    summary?: string | null;
 }
 
 interface WorkSchedule extends RawWorkSchedule {
@@ -105,6 +106,7 @@ export default function WorkCalendar() {
 
     // Photo upload state
     const [photoModal, setPhotoModal] = useState<{ mode: 'start' | 'complete'; ids: string[]; detail: string } | null>(null);
+    const [workSummary, setWorkSummary] = useState('');
 
     useEffect(() => {
         const handlePopState = () => {
@@ -224,26 +226,41 @@ export default function WorkCalendar() {
         setPhotoModal({ mode: status === 'inprogress' ? 'start' : 'complete', ids, detail });
     };
 
-    const handlePhotoConfirm = async (file: File) => {
+    const handlePhotoConfirm = async (file: File, summary?: string) => {
         if (!photoModal) return;
         const { mode, ids } = photoModal;
         const firstId = ids[0];
 
-        const photoUrl = await uploadWorkPhoto(supabase, file, firstId, mode);
+        try {
+            const photoUrl = await uploadWorkPhoto(supabase, file, firstId, mode);
 
-        const status = mode === 'start' ? 'inprogress' : 'complete';
-        const updateData: Record<string, string> = { status };
-        if (mode === 'start') {
-            updateData.started_at = new Date().toISOString();
-            updateData.start_photo_url = photoUrl;
-        } else {
-            updateData.completed_at = new Date().toISOString();
-            updateData.complete_photo_url = photoUrl;
+            const status = mode === 'start' ? 'inprogress' : 'complete';
+            const updateData: Record<string, string> = { status };
+            if (mode === 'start') {
+                updateData.started_at = new Date().toISOString();
+                updateData.start_photo_url = photoUrl;
+            } else {
+                updateData.completed_at = new Date().toISOString();
+                updateData.complete_photo_url = photoUrl;
+                if (summary) {
+                    updateData.summary = summary;
+                }
+            }
+
+            const { error } = await supabase.from("work_schedule").update(updateData).in("id", ids);
+            if (error) {
+                console.error('Update error:', error);
+                alert('บันทึกข้อมูลไม่สำเร็จ: ' + error.message);
+                return;
+            }
+            await fetchWorkSchedules(currentEmployeeId, isAdmin);
+            setPhotoModal(null);
+            setWorkSummary('');
+        } catch (err) {
+            console.error('Upload error:', err);
+            const errorMessage = err instanceof Error ? err.message : 'กรุณาตรวจสอบว่าสร้าง bucket "work-photos" ใน Supabase Storage แล้ว';
+            alert('อัพโหลดรูปไม่สำเร็จ: ' + errorMessage);
         }
-
-        await supabase.from("work_schedule").update(updateData).in("id", ids);
-        await fetchWorkSchedules(currentEmployeeId, isAdmin);
-        setPhotoModal(null);
     };
 
     const handleEventClick = (e: React.MouseEvent, group: WorkSchedule[]) => {
@@ -395,6 +412,14 @@ export default function WorkCalendar() {
                                     <p className="font-bold text-slate-800 text-sm">{cleanWorkerName(work.worker)}</p>
                                     <div className="flex items-center gap-1.5 mt-0.5 text-[11px] font-bold text-slate-400"><Building2 size={11} /> {work.department}</div>
                                     <p className="text-[11px] text-slate-400 line-clamp-1 mt-1">{work.detail}</p>
+                                    {work.summary && (
+                                        <div className="mt-2 p-2 bg-emerald-50 rounded-xl border border-emerald-100">
+                                            <p className="text-[10px] font-black text-emerald-600 uppercase tracking-wider mb-0.5 flex items-center gap-1">
+                                                <CheckCircle2 size={9} /> สรุปรายการ
+                                            </p>
+                                            <p className="text-xs font-bold text-emerald-800 line-clamp-2">{work.summary}</p>
+                                        </div>
+                                    )}
                                     <div className="mt-2 pt-2 border-t border-slate-50 grid grid-cols-2 gap-1">
                                         <div className="flex items-center gap-1 text-[9px] font-bold text-slate-400">
                                             <PlayCircle size={15} className="text-blue-500" /> {formatTimestamp(work.started_at)}
@@ -571,6 +596,14 @@ export default function WorkCalendar() {
                                         <p className="text-sm font-bold text-slate-800 group-hover:text-blue-600 transition-colors">{cleanWorkerName(work.worker)}</p>
                                         <div className="flex items-center gap-1.5 mt-1 text-[11px] font-bold text-slate-500"><Building2 size={12} className="text-slate-400" /><span>{work.department}</span></div>
                                         <p className="text-[11px] text-slate-400 line-clamp-2 mt-1.5 leading-relaxed">{work.detail}</p>
+                                        {work.summary && (
+                                            <div className="mt-2 p-2 bg-emerald-50 rounded-xl border border-emerald-100">
+                                                <p className="text-[10px] font-black text-emerald-600 uppercase tracking-wider mb-0.5 flex items-center gap-1">
+                                                    <CheckCircle2 size={9} /> สรุปรายการ
+                                                </p>
+                                                <p className="text-xs font-bold text-emerald-800 line-clamp-2">{work.summary}</p>
+                                            </div>
+                                        )}
                                         <div className="mt-2 pt-2 border-t border-slate-50 grid grid-cols-2 gap-1">
                                             <div className="flex items-center gap-1 text-[9px] font-bold text-slate-400">
                                                 <PlayCircle size={15} className="text-blue-500" /> {formatTimestamp(work.started_at)}
@@ -727,15 +760,23 @@ export default function WorkCalendar() {
                                                         </p>
                                                     </div>
                                                 </div>
-                                                <div className="flex items-center gap-3 px-4 py-3">
-                                                    <div className="w-7 h-7 rounded-xl bg-emerald-50 flex items-center justify-center shrink-0">
+                                                <div className="flex items-start gap-3 px-4 py-3">
+                                                    <div className="w-7 h-7 rounded-xl bg-emerald-50 flex items-center justify-center shrink-0 mt-0.5">
                                                         <CheckCircle2 size={15} className="text-emerald-500" />
                                                     </div>
-                                                    <div>
+                                                    <div className="flex-1">
                                                         <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">เสร็จสิ้น</p>
                                                         <p className="text-sm font-bold text-slate-800">
                                                             {selectedWork.completed_at ? formatTimestamp(selectedWork.completed_at) : <span className="text-slate-300">ยังไม่เสร็จ</span>}
                                                         </p>
+                                                        {selectedWork.summary && (
+                                                            <div className="mt-2 p-3 bg-emerald-50 rounded-xl border border-emerald-100">
+                                                                <p className="text-[10px] font-black text-emerald-600 uppercase tracking-wider mb-1 flex items-center gap-1">
+                                                                    <CheckCircle2 size={10} /> สรุปรายการ
+                                                                </p>
+                                                                <p className="text-sm font-bold text-emerald-800">{selectedWork.summary}</p>
+                                                            </div>
+                                                        )}
                                                     </div>
                                                 </div>
                                             </div>
@@ -773,7 +814,9 @@ export default function WorkCalendar() {
                     mode={photoModal.mode}
                     jobDetail={photoModal.detail}
                     onConfirm={handlePhotoConfirm}
-                    onCancel={() => setPhotoModal(null)}
+                    onCancel={() => { setPhotoModal(null); setWorkSummary(''); }}
+                    summary={workSummary}
+                    onSummaryChange={setWorkSummary}
                 />
             )}
         </div>

@@ -6,16 +6,20 @@ import { Camera, Upload, X, RotateCcw, CheckCircle2, Loader2, Image as ImageIcon
 interface PhotoUploadModalProps {
   mode: 'start' | 'complete';
   jobDetail: string;
-  onConfirm: (file: File) => Promise<void>;
+  onConfirm: (file: File, summary?: string) => Promise<void>;
   onCancel: () => void;
+  summary?: string;
+  onSummaryChange?: (summary: string) => void;
 }
 
-export default function PhotoUploadModal({ mode, jobDetail, onConfirm, onCancel }: PhotoUploadModalProps) {
+export default function PhotoUploadModal({ mode, jobDetail, onConfirm, onCancel, summary = '', onSummaryChange }: PhotoUploadModalProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+
+  const isComplete = mode === 'complete';
 
   const isStart = mode === 'start';
   const accentColor = isStart ? '#3b82f6' : '#10b981';
@@ -37,9 +41,13 @@ export default function PhotoUploadModal({ mode, jobDetail, onConfirm, onCancel 
 
   const handleConfirm = async () => {
     if (!selectedFile) return;
+    if (isComplete && !summary.trim()) {
+      alert('กรุณากรอกสรุปรายการก่อนยืนยัน');
+      return;
+    }
     setUploading(true);
     try {
-      await onConfirm(selectedFile);
+      await onConfirm(selectedFile, isComplete ? summary : undefined);
     } finally {
       setUploading(false);
     }
@@ -83,6 +91,26 @@ export default function PhotoUploadModal({ mode, jobDetail, onConfirm, onCancel 
               <X size={18} />
             </button>
           </div>
+
+          {/* Summary textarea for complete mode */}
+          {isComplete && preview && (
+            <div className="mb-4">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2 block flex items-center gap-1">
+                สรุปรายการ <span className="text-red-500">*</span>
+              </label>
+              <textarea
+                value={summary}
+                onChange={(e) => onSummaryChange?.(e.target.value)}
+                placeholder="สรุปงานที่ทำ... (จำเป็นต้องกรอก)"
+                rows={3}
+                required
+                className={`w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold text-sm outline-none transition-all resize-none ${summary.trim() ? 'border-emerald-500 focus:border-emerald-500' : 'border-red-300 focus:border-red-500'}`}
+              />
+              {!summary.trim() && (
+                <p className="text-[10px] text-red-500 mt-1 font-bold">* กรุณากรอกสรุปรายการก่อนยืนยัน</p>
+              )}
+            </div>
+          )}
 
           {/* Photo area */}
           {preview ? (

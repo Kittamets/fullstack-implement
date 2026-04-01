@@ -40,7 +40,8 @@ export default function PricePage() {
         name: '', category: '', detail: '', price1: '', price2: '', price3: ''
     });
 
-    const isAdmin = userRole === 'admin';
+    const isAdmin = userRole === 'admin' || userRole === 'owner';
+    const isOwner = userRole === 'owner';
 
     const formatDate = (dateString: string) => {
         const date = new Date(dateString);
@@ -58,7 +59,7 @@ export default function PricePage() {
     );
 
     const [draggedItemIndex, setDraggedItemIndex] = useState<number | null>(null);
-    const handleDragStart = (index: number) => { if (!isAdmin) return; setDraggedItemIndex(index); };
+    const handleDragStart = (index: number) => { if (!isOwner) return; setDraggedItemIndex(index); };
     const handleDragOver = (e: React.DragEvent, index: number) => {
         e.preventDefault();
         if (draggedItemIndex === null || draggedItemIndex === index) return;
@@ -220,28 +221,28 @@ export default function PricePage() {
                         </button>
                     </li>
                     {categories.map((cat, index) => (
-                        <li 
-                            key={cat} 
-                            draggable={isAdmin} 
-                            onDragStart={() => handleDragStart(index)} 
-                            onDragOver={(e) => handleDragOver(e, index)} 
-                            onDragEnd={handleDragEnd} 
+                        <li
+                            key={cat}
+                            draggable={isOwner}
+                            onDragStart={() => handleDragStart(index)}
+                            onDragOver={(e) => handleDragOver(e, index)}
+                            onDragEnd={handleDragEnd}
                             className={`flex items-center gap-1 group transition-opacity ${draggedItemIndex === index ? 'opacity-20' : 'opacity-100'}`}
                         >
-                            {isAdmin && (
+                            {isOwner && (
                                 <div className="cursor-grab active:cursor-grabbing p-1 text-slate-200 group-hover:text-slate-400 transition-colors">
                                     <GripVertical size={12} />
                                 </div>
                             )}
                             <div className="flex-1 flex items-center gap-1 relative group/catitem">
-                                <button 
-                                    className={`flex-1 text-left px-4 py-2 rounded-xl font-bold text-[11px] transition-all ${selectedCategory === cat ? 'bg-slate-900 text-white shadow-md' : 'hover:bg-slate-50 text-slate-500'}`} 
+                                <button
+                                    className={`flex-1 text-left px-4 py-2 rounded-xl font-bold text-[11px] transition-all ${selectedCategory === cat ? 'bg-slate-900 text-white shadow-md' : 'hover:bg-slate-50 text-slate-500'}`}
                                     onClick={() => setSelectedCategory(cat)}
                                 >
                                     {cat}
                                 </button>
-                                
-                                {isAdmin && (
+
+                                {isOwner && (
                                     <div className="absolute right-1 hidden group-hover/catitem:flex items-center gap-0.5 bg-white/10 rounded-lg px-1 backdrop-blur-sm">
                                         <button 
                                             onClick={(e) => { e.stopPropagation(); handleEditCategory(cat); }}
@@ -281,7 +282,9 @@ export default function PricePage() {
                             <button onClick={() => setViewMode('active')} className={`flex-1 md:flex-none flex items-center justify-center gap-2 px-5 py-2 rounded-xl text-xs font-black transition-all ${viewMode === 'active' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-500 hover:text-slate-700'}`}><Eye size={14} /> เปิดขายอยู่</button>
                         </div>
                         <div className="flex gap-2 w-full md:w-auto">
-                            <button onClick={() => { setEditingId(null); setFormData({name:'',category:'',detail:'',price1:'',price2:'',price3:''}); setShowFormModal(true); }} className="flex-1 md:flex-none px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-blue-100 active:scale-95 transition-all"><Plus size={16} /> เพิ่มใหม่</button>
+                            {isOwner && (
+                                <button onClick={() => { setEditingId(null); setFormData({name:'',category:'',detail:'',price1:'',price2:'',price3:''}); setShowFormModal(true); }} className="flex-1 md:flex-none px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-blue-100 active:scale-95 transition-all"><Plus size={16} /> เพิ่มใหม่</button>
+                            )}
                             <div className="relative flex-1 md:w-64 group">
                                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-slate-900 transition-colors" size={14} />
                                 <input type="text" placeholder="ค้นหาชื่อ, รายละเอียด..." className="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl font-bold outline-none focus:border-slate-900 text-xs transition-all shadow-sm" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
@@ -305,11 +308,14 @@ export default function PricePage() {
                                     <div key={p.id} className={`bg-white border border-slate-100 rounded-[2rem] p-6 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 relative flex flex-col ${!p.is_visible ? 'opacity-50 border-dashed bg-slate-50/50' : ''}`}>
                                         <div className="flex justify-between items-start mb-4">
                                             <span className={`text-[8px] font-black px-2 py-1 rounded-lg uppercase tracking-tighter ${!p.is_visible ? 'bg-slate-200 text-slate-500' : 'bg-emerald-100 text-emerald-700'}`}>{!p.is_visible ? 'Hidden' : 'Active'}</span>
-                                            <div className="flex gap-1">
-                                                <button onClick={() => toggleVisibility(p.id, p.is_visible)} className="p-2 text-blue-400 hover:bg-blue-50 rounded-xl transition-all">{!p.is_visible ? <EyeOff size={16} /> : <Eye size={16} />}</button>
-                                                <button onClick={() => { setEditingId(p.id); setFormData({name: p.name, category: p.category, detail: p.detail || '', price1: String(p.price1), price2: String(p.price2), price3: String(p.price3)}); setShowFormModal(true); }} className="p-2 text-orange-400 hover:bg-orange-50 rounded-xl transition-all"><Pencil size={16} /></button>
-                                                <button onClick={() => handleDeleteProduct(p.id)} className="p-2 text-rose-400 hover:bg-rose-50 rounded-xl transition-all"><Trash2 size={16} /></button>
-                                            </div>
+
+                                            {isOwner && (
+                                                <div className="flex gap-1">
+                                                    <button onClick={() => toggleVisibility(p.id, p.is_visible)} className="p-2 text-blue-400 hover:bg-blue-50 rounded-xl transition-all">{!p.is_visible ? <EyeOff size={16} /> : <Eye size={16} />}</button>
+                                                    <button onClick={() => { setEditingId(p.id); setFormData({name: p.name, category: p.category, detail: p.detail || '', price1: String(p.price1), price2: String(p.price2), price3: String(p.price3)}); setShowFormModal(true); }} className="p-2 text-orange-400 hover:bg-orange-50 rounded-xl transition-all"><Pencil size={16} /></button>
+                                                    <button onClick={() => handleDeleteProduct(p.id)} className="p-2 text-rose-400 hover:bg-rose-50 rounded-xl transition-all"><Trash2 size={16} /></button>
+                                                </div>
+                                            )}
                                         </div>
                                         
                                         <div className="flex-1">

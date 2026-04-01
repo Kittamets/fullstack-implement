@@ -62,12 +62,16 @@ export async function middleware(request: NextRequest) {
       .eq('id', user.id)
       .single()
 
-    const isAdmin = profile?.role === 'admin'
+    const userRole = profile?.role || 'user'
+    const isAdmin = userRole === 'admin' || userRole === 'owner'
+    const isOwner = userRole === 'owner'
 
-    // ถ้าเข้าหน้า Admin แต่ไม่ใช่ Admin -> ส่งไปหน้า Home
+    // ถ้าเข้าหน้า Admin แต่ไม่ใช่ Admin/Owner -> ส่งไปหน้า Home
     if (isAdminPath && !isAdmin) {
       return NextResponse.redirect(new URL('/home', request.url))
     }
+
+    // Owner can access everything, no additional restrictions needed
 
     // ถ้าล็อกอินอยู่แล้ว จะเข้าหน้า Login/Register -> ส่งไปหน้า Home
     if (path.startsWith('/auth/login') || path.startsWith('/auth/register')) {

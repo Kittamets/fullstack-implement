@@ -7,7 +7,7 @@ import {
     Pencil, Trash2, Maximize, Minimize, Users, Loader2, CheckCircle2,
     Save, Settings, User, CircleDollarSign, MapPin, Undo2,
     PlusIcon, ChevronDown, Check, AlertTriangle, TrendingDown,
-    CalendarRange, PlayCircle, Timer, Camera
+    CalendarRange, PlayCircle, Timer, Camera, Shield
 } from 'lucide-react';
 import Link from "next/link";
 import PhotoUploadModal from "@/components/PhotoUploadModal";
@@ -43,6 +43,7 @@ interface WorkScheduleItem {
     completed_at: string | null;
     start_photo_url?: string | null;
     complete_photo_url?: string | null;
+    summary?: string | null;
 }
 
 interface WorkForm {
@@ -137,6 +138,7 @@ export default function HomePage() {
 
     // Photo upload state
     const [photoModal, setPhotoModal] = useState<{ mode: 'start' | 'complete'; id: string; detail: string } | null>(null);
+    const [workSummary, setWorkSummary] = useState('');
 
     const initialFormState: WorkForm = {
         work_date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok' }).format(new Date()),
@@ -151,7 +153,8 @@ export default function HomePage() {
     };
     const [formData, setFormData] = useState<WorkForm>(initialFormState);
 
-    const isAdmin = user?.role === 'admin';
+    const isAdmin = user?.role === 'admin' || user?.role === 'owner';
+    const isOwner = user?.role === 'owner';
 
     const deptColorMap = useMemo(() => departments.reduce((acc, curr) => {
         acc[curr.name] = curr.color_code; return acc;
@@ -276,7 +279,12 @@ export default function HomePage() {
         const { error } = editingId
             ? await supabase.from("work_schedule").update(payload).eq("id", editingId)
             : await supabase.from("work_schedule").insert([{ ...payload, status: 'pending' }]);
-        if (!error && user) { setFormData(initialFormState); setEditingId(null); refreshData(user.role, user.employeeId ?? null); }
+        if (error) {
+            console.error('Submit error:', error);
+            alert('บันทึกไม่สำเร็จ: ' + error.message);
+        } else if (user) {
+            setFormData(initialFormState); setEditingId(null); refreshData(user.role, user.employeeId ?? null);
+        }
         setSubmitting(false);
     };
 
@@ -286,25 +294,40 @@ export default function HomePage() {
         setPhotoModal({ mode: status === 'inprogress' ? 'start' : 'complete', id, detail });
     };
 
-    const handlePhotoConfirm = async (file: File) => {
+    const handlePhotoConfirm = async (file: File, summary?: string) => {
         if (!photoModal) return;
         const { mode, id } = photoModal;
 
-        const photoUrl = await uploadWorkPhoto(supabase, file, id, mode);
+        try {
+            const photoUrl = await uploadWorkPhoto(supabase, file, id, mode);
 
-        const status = mode === 'start' ? 'inprogress' : 'complete';
-        const updateData: Record<string, string> = { status };
-        if (mode === 'start') {
-            updateData.started_at = new Date().toISOString();
-            updateData.start_photo_url = photoUrl;
-        } else {
-            updateData.completed_at = new Date().toISOString();
-            updateData.complete_photo_url = photoUrl;
+            const status = mode === 'start' ? 'inprogress' : 'complete';
+            const updateData: Record<string, string> = { status };
+            if (mode === 'start') {
+                updateData.started_at = new Date().toISOString();
+                updateData.start_photo_url = photoUrl;
+            } else {
+                updateData.completed_at = new Date().toISOString();
+                updateData.complete_photo_url = photoUrl;
+                if (summary) {
+                    updateData.summary = summary;
+                }
+            }
+
+            const { error } = await supabase.from("work_schedule").update(updateData).eq("id", id);
+            if (error) {
+                console.error('Update error:', error);
+                alert('บันทึกข้อมูลไม่สำเร็จ: ' + error.message);
+                return;
+            }
+            if (user) refreshData(user.role, user.employeeId ?? null);
+            setPhotoModal(null);
+            setWorkSummary('');
+        } catch (err) {
+            console.error('Upload error:', err);
+            const errorMessage = err instanceof Error ? err.message : 'กรุณาตรวจสอบว่าสร้าง bucket "work-photos" ใน Supabase Storage แล้ว';
+            alert('อัพโหลดรูปไม่สำเร็จ: ' + errorMessage);
         }
-
-        await supabase.from("work_schedule").update(updateData).eq("id", id);
-        if (user) refreshData(user.role, user.employeeId ?? null);
-        setPhotoModal(null);
     };
 
     const filteredWork = useMemo(() => {
@@ -340,9 +363,16 @@ export default function HomePage() {
                 </h1>
                 {isAdmin && (
                     <div className="flex flex-wrap gap-2 animate-in fade-in duration-500 w-full md:w-auto">
-                        <Link href="/employees" className="bg-white border-2 px-3 py-2 md:px-5 md:py-3 rounded-xl md:rounded-2xl font-black text-slate-600 hover:text-slate-900 transition-all flex items-center gap-1.5 shadow-sm text-sm"><Users size={15} /> พนักงาน</Link>
-                        <Link href="/departments" className="bg-white border-2 px-3 py-2 md:px-5 md:py-3 rounded-xl md:rounded-2xl font-black text-slate-600 hover:text-slate-900 transition-all flex items-center gap-1.5 shadow-sm text-sm"><Settings size={15} /> แผนก</Link>
-                        <Link href="/price" className="bg-amber-50 border-2 border-amber-200 px-3 py-2 md:px-5 md:py-3 rounded-xl md:rounded-2xl font-black text-amber-600 hover:bg-amber-600 hover:text-white transition-all flex items-center gap-1.5 shadow-sm ml-auto text-sm"><CircleDollarSign size={15} /> แก้ไขราคาวัสดุ</Link>
+                        {!isOwner && (
+                            <>
+                                <Link href="/employees" className="bg-white border-2 px-3 py-2 md:px-5 md:py-3 rounded-xl md:rounded-2xl font-black text-slate-600 hover:text-slate-900 transition-all flex items-center gap-1.5 shadow-sm text-sm"><Users size={15} /> พนักงาน</Link>
+                                <Link href="/departments" className="bg-white border-2 px-3 py-2 md:px-5 md:py-3 rounded-xl md:rounded-2xl font-black text-slate-600 hover:text-slate-900 transition-all flex items-center gap-1.5 shadow-sm text-sm"><Settings size={15} /> แผนก</Link>
+                            </>
+                        )}
+                        <Link href="/price" className="bg-amber-50 border-2 border-amber-200 px-3 py-2 md:px-5 md:py-3 rounded-xl md:rounded-2xl font-black text-amber-600 hover:bg-amber-600 hover:text-white transition-all flex items-center gap-1.5 shadow-sm text-sm"><CircleDollarSign size={15} />ราคาสินค้า</Link>
+                        {isOwner && (
+                            <Link href="/admin-management" className="bg-slate-900 border-2 border-slate-900 px-3 py-2 md:px-5 md:py-3 rounded-xl md:rounded-2xl font-black text-white hover:bg-slate-800 transition-all flex items-center gap-1.5 shadow-sm text-sm"><Shield size={15} /> จัดการแอดมิน</Link>
+                        )}
                     </div>
                 )}
             </header>
@@ -804,15 +834,23 @@ export default function HomePage() {
                                                     </p>
                                                 </div>
                                             </div>
-                                            <div className="flex items-center gap-3 px-4 py-3">
-                                                <div className="w-7 h-7 rounded-xl bg-emerald-50 flex items-center justify-center shrink-0">
+                                            <div className="flex items-start gap-3 px-4 py-3">
+                                                <div className="w-7 h-7 rounded-xl bg-emerald-50 flex items-center justify-center shrink-0 mt-0.5">
                                                     <CheckCircle2 size={15} className="text-emerald-500" />
                                                 </div>
-                                                <div>
+                                                <div className="flex-1">
                                                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">เสร็จสิ้น</p>
                                                     <p className="text-sm font-bold text-slate-800">
                                                         {selectedWork.completed_at ? formatTimestamp(selectedWork.completed_at) : <span className="text-slate-300">ยังไม่เสร็จ</span>}
                                                     </p>
+                                                    {selectedWork.summary && (
+                                                        <div className="mt-2 p-3 bg-emerald-50 rounded-xl border border-emerald-100">
+                                                            <p className="text-[10px] font-black text-emerald-600 uppercase tracking-wider mb-1 flex items-center gap-1">
+                                                                <CheckCircle2 size={10} /> สรุปรายการ
+                                                            </p>
+                                                            <p className="text-sm font-bold text-emerald-800">{selectedWork.summary}</p>
+                                                        </div>
+                                                    )}
                                                 </div>
                                             </div>
                                         </div>
@@ -848,7 +886,9 @@ export default function HomePage() {
                     mode={photoModal.mode}
                     jobDetail={photoModal.detail}
                     onConfirm={handlePhotoConfirm}
-                    onCancel={() => setPhotoModal(null)}
+                    onCancel={() => { setPhotoModal(null); setWorkSummary(''); }}
+                    summary={workSummary}
+                    onSummaryChange={setWorkSummary}
                 />
             )}
         </main>
