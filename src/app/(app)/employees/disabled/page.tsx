@@ -36,6 +36,7 @@ export default function DisabledEmployeesPage() {
         .from("employees")
         .select("*, departments(*)")
         .eq("is_active", false)
+        .is("user_id", null)  // เฉพาะพนักงานที่ออกแล้ว (user_id = null) ไม่ใช่รออนุมัติ
         .order("created_at", { ascending: false });
       if (error) throw error;
       if (data) setEmployees(data as unknown as Employee[]);
@@ -51,24 +52,59 @@ export default function DisabledEmployeesPage() {
   const handleRestore = async (emp: Employee) => {
     const email = prompt(`ดึงคุณ ${emp.name} กลับเข้าทำงาน\nกรุณาระบุ Email สำหรับใช้ Login:`);
     if (!email) return;
+
+    // ตรวจสอบ email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      alert("กรุณาระบุ Email ที่ถูกต้อง");
+      return;
+    }
+
     const password = prompt(`ตั้งรหัสผ่านใหม่สำหรับคุณ ${emp.name}\n(อย่างน้อย 6 ตัวอักษร):`);
     if (!password) return;
     if (password.length < 6) { alert("รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร"); return; }
 
     setLoading(true);
     try {
-      const res = await fetch('/employees/api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password, name: emp.name }) });
+      const res = await fetch('/employees/api', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, name: emp.name })
+      });
+
       const authRes = await res.json();
-      if (authRes.error) throw new Error(authRes.error);
+      if (!res.ok || authRes.error) {
+        throw new Error(authRes.error || `HTTP ${res.status}`);
+      }
 
       const newUserId = authRes.user.id;
-      await supabase.from("profiles").update({ email }).eq("id", newUserId);
-      const { error: updateError } = await supabase.from("employees").update({ is_active: true, user_id: newUserId }).eq("id", emp.id);
-      if (updateError) throw updateError;
 
-      alert(`ดึงคุณ ${emp.name} กลับเข้าทำงานเรียบร้อยแล้ว`);
+      // อัปเดต profile ให้อนุมัติแล้ว
+      const { error: profileError } = await supabase
+        .from("profiles")
+        .upsert({
+          id: newUserId,
+          email: email,
+          is_approved: true,
+          role: 'user'
+        }, { onConflict: 'id' });
+
+      if (profileError) {
+        console.error('Profile update error:', profileError);
+      }
+
+      // อัปเดต employee ให้กลับมาทำงาน
+      const { error: updateError } = await supabase
+        .from("employees")
+        .update({ is_active: true, user_id: newUserId })
+        .eq("id", emp.id);
+
+      if (updateError) throw new Error(`ไม่สามารถอัปเดตข้อมูล: ${updateError.message}`);
+
+      alert(`ดึงคุณ ${emp.name} กลับเข้าทำงานเรียบร้อยแล้ว\n\nEmail: ${email}\nPassword: ${password}`);
       setEmployees(prev => prev.filter(e => e.id !== emp.id));
     } catch (err) {
+      console.error('Restore error:', err);
       alert("เกิดข้อผิดพลาด: " + (err instanceof Error ? err.message : "ไม่ทราบสาเหตุ"));
     } finally {
       setLoading(false);
@@ -79,13 +115,25 @@ export default function DisabledEmployeesPage() {
     if (!confirm(`ยืนยันการลบคุณ ${emp.name} ออกจากระบบถาวร?`)) return;
     setLoading(true);
     try {
-      if (emp.user_id) {
-        const res = await fetch('/employees/api', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: emp.user_id }) });
-        const result = await res.json();
-        if (!res.ok && !result.error?.includes('not found')) throw new Error(result.error || 'ลบบัญชีไม่สำเร็จ');
-      }
+      // 1. ลบ employee record ก่อน
       const { error } = await supabase.from("employees").delete().eq("id", emp.id);
       if (error) throw error;
+
+      // 2. ลบ user ออกจาก Auth (ถ้ามี) - ทำหลังจากลบ employee แล้ว
+      if (emp.user_id) {
+        try {
+          const res = await fetch('/employees/api', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: emp.user_id }) });
+          const result = await res.json();
+          if (!res.ok && !result.error?.includes('not found')) {
+            console.warn('ไม่สามารถลบ user จาก Auth:', result.error);
+            // ไม่ throw error เพราะ employees ลบสำเร็จแล้ว
+          }
+        } catch (deleteError) {
+          console.warn('ไม่สามารถลบ user จาก Auth:', deleteError);
+          // ไม่ throw error เพราะ employees ลบสำเร็จแล้ว
+        }
+      }
+
       setEmployees(prev => prev.filter(e => e.id !== emp.id));
     } catch (err) {
       alert("ไม่สามารถลบข้อมูลได้: " + (err instanceof Error ? err.message : "ไม่ทราบสาเหตุ"));

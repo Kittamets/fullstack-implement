@@ -38,9 +38,16 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  // ตรวจสอบ User (ใช้ getUser เพื่อความปลอดภัยสูงสุด)
-  const { data: { user } } = await supabase.auth.getUser()
+  // ดึง pathname
   const path = request.nextUrl.pathname
+
+  // ยกเว้นหน้า auth ทั้งหมด (ไม่ต้องเช็คอะไร)
+  if (path.startsWith('/auth/')) {
+    return response
+  }
+
+  // ตรวจสอบ User
+  const { data: { user } } = await supabase.auth.getUser()
 
   // กำหนดเส้นทาง
   const adminOnlyPaths = ['/employees', '/departments', '/price']
@@ -48,34 +55,45 @@ export async function middleware(request: NextRequest) {
   const isAdminPath = adminOnlyPaths.some(p => path.startsWith(p))
   const isProtectedRoute = isAdminPath || userPaths.some(p => path.startsWith(p))
 
-  // 1. ถ้าพยายามเข้าหน้าที่ต้องล็อกอิน แต่ยังไม่ได้ล็อกอิน
+  // 1. ถ้ายังไม่ได้ login และเข้าหน้าที่ต้องการ login
   if (!user && isProtectedRoute) {
     return NextResponse.redirect(new URL('/auth/login', request.url))
   }
 
-  // 2. ถ้าล็อกอินแล้ว
+  // 2. ถ้า login แล้ว
   if (user) {
-    // เช็ค Role จาก Database (แนะนำให้เปลี่ยนไปใช้ Custom Claims ในอนาคตเพื่อความเร็ว)
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('role')
-      .eq('id', user.id)
-      .single()
+    try {
+      // ดึงข้อมูล profile
+      const { data: profile, error: profileError } = await supabase
+        .from('profiles')
+        .select('role, is_approved')
+        .eq('id', user.id)
+        .maybeSingle()
 
-    const userRole = profile?.role || 'user'
-    const isAdmin = userRole === 'admin' || userRole === 'owner'
-    const isOwner = userRole === 'owner'
+      // ถ้ามี error ที่ไม่ใช่ "ไม่พบข้อมูล" ให้ log ไว้
+      if (profileError && profileError.code !== 'PGRST116') {
+        console.error('Middleware profile fetch error:', profileError)
+      }
 
-    // ถ้าเข้าหน้า Admin แต่ไม่ใช่ Admin/Owner -> ส่งไปหน้า Home
-    if (isAdminPath && !isAdmin) {
-      return NextResponse.redirect(new URL('/home', request.url))
-    }
+      const userRole = profile?.role || 'user'
+      const isAdmin = userRole === 'admin' || userRole === 'owner'
 
-    // Owner can access everything, no additional restrictions needed
+      // สำคัญ: admin/owner ถือว่าอนุมัติแล้วเสมอ
+      // หรือถ้า is_approved เป็น null (user เก่า) หรือ true → อนุมัติแล้ว
+      const isApproved = isAdmin || profile?.is_approved === true || profile?.is_approved === null
 
-    // ถ้าล็อกอินอยู่แล้ว จะเข้าหน้า Login/Register -> ส่งไปหน้า Home
-    if (path.startsWith('/auth/login') || path.startsWith('/auth/register')) {
-      return NextResponse.redirect(new URL('/home', request.url))
+      // ถ้ายังไม่ได้รับการอนุมัติ → redirect ไป pending
+      if (!isApproved) {
+        return NextResponse.redirect(new URL('/auth/pending', request.url))
+      }
+
+      // ถ้าเข้าหน้า Admin แต่ไม่ใช่ Admin/Owner → redirect ไป home
+      if (isAdminPath && !isAdmin) {
+        return NextResponse.redirect(new URL('/home', request.url))
+      }
+    } catch (err) {
+      console.error('Middleware error:', err)
+      // ในกรณี error ให้ผ่านไปก่อน (fail open) เพื่อไม่ block user
     }
   }
 
