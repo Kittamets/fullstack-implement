@@ -279,7 +279,7 @@ export default function EmployeesPage() {
             const { data: deptData } = await supabase.from("departments").select("*").order("name");
 
             if (empData) setEmployees(empData as unknown as Employee[]);
-            if (pendingData) setPendingEmployees(pendingData.map((p: { profiles: unknown; }) => ({ ...p, profiles: Array.isArray(p.profiles) ? p.profiles[0] : p.profiles })) as PendingEmployee[]);
+            if (pendingData) setPendingEmployees(pendingData.map((p) => ({ ...p, profiles: Array.isArray(p.profiles) ? p.profiles[0] : p.profiles })));
             if (deptData) setDepartments(deptData as Department[]);
 
             if (!isEditing) {
