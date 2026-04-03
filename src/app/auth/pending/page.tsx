@@ -13,7 +13,7 @@ export default function PendingApprovalPage() {
   const [fullName, setFullName] = useState('')
 
   // รับ email จาก query params (กรณีมาจากหน้า register)
-  const emailFromUrl = searchParams.get('email') || ''
+  const emailFromUrl = searchParams?.get('email') || ''
 
   useEffect(() => {
     let isMounted = true
