@@ -5,6 +5,8 @@ import { createClient } from '@/lib/supabase/client'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 
+export const dynamic = 'force-dynamic'
+
 export default function PendingApprovalPage() {
   const supabase = createClient()
   const searchParams = useSearchParams()
