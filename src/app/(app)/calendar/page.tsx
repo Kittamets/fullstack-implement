@@ -5,9 +5,8 @@ import {
     X, Search, Building2, Inbox, CheckCircle2,
     PlayCircle, Timer, CalendarRange, MapPin, Camera
 } from "lucide-react";
-import { createClient } from "@/lib/supabase/client";
-import PhotoUploadModal from "@/components/PhotoUploadModal";
-import { uploadWorkPhoto } from "@/lib/uploadWorkPhoto";
+import PhotoUploadModal from '@/frontend/components/PhotoUploadModal';
+import { uploadWorkPhoto } from '@/frontend/lib/uploadWorkPhoto';
 
 interface RawWorkSchedule {
     id: string;
@@ -38,6 +37,26 @@ interface WorkSchedule extends RawWorkSchedule {
 }
 
 interface Department { name: string; color_code: string; }
+
+function normalizeRawWork(w: Record<string, unknown>): RawWorkSchedule {
+    return {
+        id: String(w._id),
+        work_date: w.workDate ? String(w.workDate).substring(0, 10) : '',
+        end_date: w.endDate ? String(w.endDate).substring(0, 10) : null,
+        work_time: String(w.workTime ?? ''),
+        worker: String(w.worker ?? ''),
+        worker_role: String(w.workerRole ?? ''),
+        detail: String(w.detail ?? ''),
+        department: String(w.department ?? ''),
+        status: (w.status as RawWorkSchedule['status']) ?? 'pending',
+        completed_at: w.completedAt ? String(w.completedAt) : null,
+        started_at: w.startedAt ? String(w.startedAt) : null,
+        employee_ids: Array.isArray(w.employeeIds) ? (w.employeeIds as unknown[]).map(String) : null,
+        start_photo_url: w.startPhotoUrl ? String(w.startPhotoUrl) : null,
+        complete_photo_url: w.completePhotoUrl ? String(w.completePhotoUrl) : null,
+        summary: w.summary ? String(w.summary) : null,
+    }
+}
 
 const customStyles = `
   @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap');
@@ -90,7 +109,6 @@ function calcDuration(start: string | null | undefined, end: string | null | und
 }
 
 export default function WorkCalendar() {
-    const supabase = useMemo(() => createClient(), []);
     const [currentDate, setCurrentDate] = useState(new Date());
     const [selectedDate, setSelectedDate] = useState<Date | null>(new Date());
     const [workSchedules, setWorkSchedules] = useState<WorkSchedule[]>([]);
@@ -134,19 +152,23 @@ export default function WorkCalendar() {
     }, []);
 
     const fetchWorkSchedules = async (empId: string | null, admin: boolean) => {
-        const { data: deptsData } = await supabase.from("departments").select("name, color_code");
-        const depts = deptsData as Department[] | null;
-        const colorMap: Record<string, string> = (depts || []).reduce((acc, curr) => {
-            acc[curr.name] = curr.color_code; return acc;
-        }, {} as Record<string, string>);
-        setDeptColorMap(colorMap);
+        const [deptsRes, wsRes] = await Promise.all([
+            fetch('/api/departments'),
+            fetch((!admin && empId) ? `/api/work-schedule?employeeId=${empId}` : '/api/work-schedule'),
+        ]);
 
-        let query = supabase.from("work_schedule").select("*");
-        if (!admin && empId) query = query.contains('employee_ids', [empId]);
-        const { data: worksData, error } = await query;
-        if (error) return;
+        let colorMap: Record<string, string> = {};
+        if (deptsRes.ok) {
+            const { departments: deptsData } = await deptsRes.json();
+            colorMap = (deptsData as Record<string, unknown>[]).reduce((acc: Record<string, string>, d) => {
+                acc[String(d.name)] = String(d.colorCode ?? ''); return acc;
+            }, {});
+            setDeptColorMap(colorMap);
+        }
 
-        const works = worksData as RawWorkSchedule[] | null;
+        if (!wsRes.ok) return;
+        const { schedules: rawData } = await wsRes.json();
+        const works = (rawData as Record<string, unknown>[]).map(normalizeRawWork);
         const mappedData = (works || []).map((w): WorkSchedule => {
             const datePart = new Date(w.work_date + 'T00:00:00');
             const timeParts = (w.work_time || "00:00").split(':');
@@ -175,18 +197,17 @@ export default function WorkCalendar() {
 
     useEffect(() => {
         const init = async () => {
-            const { data: { user: authUser } } = await supabase.auth.getUser();
-            if (!authUser) return;
-            const { data: profile } = await supabase.from("profiles").select("role").eq("id", authUser.id).single();
-            const { data: employee } = await supabase.from("employees").select("id").eq("user_id", authUser.id).single();
-            const admin = profile?.role === 'admin';
-            const empId = employee?.id ?? null;
+            const res = await fetch('/api/profiles/me');
+            if (!res.ok) return;
+            const { user: profile } = await res.json();
+            const admin = profile?.role === 'admin' || profile?.role === 'owner';
+            const empId = profile?.employeeId ?? null;
             setIsAdmin(admin);
             setCurrentEmployeeId(empId);
             await fetchWorkSchedules(empId, admin);
         };
         init();
-    }, [supabase]);
+    }, []);
 
     const handlePrev = () => {
         if (currentView === 'daily' && selectedDate) {
@@ -232,25 +253,27 @@ export default function WorkCalendar() {
         const firstId = ids[0];
 
         try {
-            const photoUrl = await uploadWorkPhoto(supabase, file, firstId, mode);
+            const photoUrl = await uploadWorkPhoto(file, firstId, mode);
 
             const status = mode === 'start' ? 'inprogress' : 'complete';
             const updateData: Record<string, string> = { status };
             if (mode === 'start') {
-                updateData.started_at = new Date().toISOString();
-                updateData.start_photo_url = photoUrl;
+                updateData.startedAt = new Date().toISOString();
+                updateData.startPhotoUrl = photoUrl;
             } else {
-                updateData.completed_at = new Date().toISOString();
-                updateData.complete_photo_url = photoUrl;
-                if (summary) {
-                    updateData.summary = summary;
-                }
+                updateData.completedAt = new Date().toISOString();
+                updateData.completePhotoUrl = photoUrl;
+                if (summary) updateData.summary = summary;
             }
 
-            const { error } = await supabase.from("work_schedule").update(updateData).in("id", ids);
-            if (error) {
-                console.error('Update error:', error);
-                alert('บันทึกข้อมูลไม่สำเร็จ: ' + error.message);
+            // Bulk update all IDs in the group
+            const res = await fetch(`/api/work-schedule/${firstId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids, update: updateData }),
+            });
+            if (!res.ok) {
+                alert('บันทึกข้อมูลไม่สำเร็จ');
                 return;
             }
             await fetchWorkSchedules(currentEmployeeId, isAdmin);

@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
 import { ArrowLeft, Loader2, Search, UserX, Trash2, AlertCircle, UserCheck } from "lucide-react";
 
 interface Department {
@@ -22,9 +21,26 @@ interface Employee {
   user_id?: string | null;
 }
 
+function normalizeEmployee(e: Record<string, unknown>): Employee {
+  const dept = e.departmentId as Record<string, unknown> | null;
+  return {
+    id: String(e._id),
+    staff_id: e.staffId ? String(e.staffId) : '',
+    name: String(e.name ?? ''),
+    image_url: e.imageUrl ? String(e.imageUrl) : null,
+    department_id: dept ? String(dept._id ?? '') : null,
+    departments: dept ? {
+      id: String(dept._id ?? ''),
+      name: String(dept.name ?? ''),
+      color_code: String(dept.colorCode ?? ''),
+    } : null,
+    is_active: Boolean(e.isActive ?? false),
+    user_id: e.userId ? String(e.userId) : null,
+  };
+}
+
 export default function DisabledEmployeesPage() {
   const router = useRouter();
-  const supabase = useMemo(() => createClient(), []);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -32,20 +48,16 @@ export default function DisabledEmployeesPage() {
   const fetchDisabled = useCallback(async () => {
     try {
       setLoading(true);
-      const { data, error } = await supabase
-        .from("employees")
-        .select("*, departments(*)")
-        .eq("is_active", false)
-        .is("user_id", null)  // เฉพาะพนักงานที่ออกแล้ว (user_id = null) ไม่ใช่รออนุมัติ
-        .order("created_at", { ascending: false });
-      if (error) throw error;
-      if (data) setEmployees(data as unknown as Employee[]);
+      const res = await fetch('/api/employees?disabled=true');
+      if (!res.ok) throw new Error('Fetch failed');
+      const { employees: data } = await res.json();
+      setEmployees((data as Record<string, unknown>[]).map(normalizeEmployee));
     } catch (err) {
       console.error("Error:", err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  }, [supabase]);
+  }, []);
 
   useEffect(() => { fetchDisabled(); }, [fetchDisabled]);
 
@@ -53,58 +65,26 @@ export default function DisabledEmployeesPage() {
     const email = prompt(`ดึงคุณ ${emp.name} กลับเข้าทำงาน\nกรุณาระบุ Email สำหรับใช้ Login:`);
     if (!email) return;
 
-    // ตรวจสอบ email format
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      alert("กรุณาระบุ Email ที่ถูกต้อง");
-      return;
-    }
+    if (!emailRegex.test(email)) { alert("กรุณาระบุ Email ที่ถูกต้อง"); return; }
 
-    const password = prompt(`ตั้งรหัสผ่านใหม่สำหรับคุณ ${emp.name}\n(อย่างน้อย 6 ตัวอักษร):`);
+    const password = prompt(`ตั้งรหัสผ่านใหม่สำหรับคุณ ${emp.name}\n(อย่างน้อย 15 ตัวอักษร):`);
     if (!password) return;
-    if (password.length < 6) { alert("รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร"); return; }
+    if (password.length < 15) { alert("รหัสผ่านต้องมีอย่างน้อย 15 ตัวอักษร"); return; }
 
     setLoading(true);
     try {
-      const res = await fetch('/employees/api', {
-        method: 'POST',
+      const res = await fetch(`/api/employees/${emp.id}`, {
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, name: emp.name })
+        body: JSON.stringify({ restore: true, email, password }),
       });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || `HTTP ${res.status}`);
 
-      const authRes = await res.json();
-      if (!res.ok || authRes.error) {
-        throw new Error(authRes.error || `HTTP ${res.status}`);
-      }
-
-      const newUserId = authRes.user.id;
-
-      // อัปเดต profile ให้อนุมัติแล้ว
-      const { error: profileError } = await supabase
-        .from("profiles")
-        .upsert({
-          id: newUserId,
-          email: email,
-          is_approved: true,
-          role: 'user'
-        }, { onConflict: 'id' });
-
-      if (profileError) {
-        console.error('Profile update error:', profileError);
-      }
-
-      // อัปเดต employee ให้กลับมาทำงาน
-      const { error: updateError } = await supabase
-        .from("employees")
-        .update({ is_active: true, user_id: newUserId })
-        .eq("id", emp.id);
-
-      if (updateError) throw new Error(`ไม่สามารถอัปเดตข้อมูล: ${updateError.message}`);
-
-      alert(`ดึงคุณ ${emp.name} กลับเข้าทำงานเรียบร้อยแล้ว\n\nEmail: ${email}\nPassword: ${password}`);
+      alert(`ดึงคุณ ${emp.name} กลับเข้าทำงานเรียบร้อยแล้ว\n\nEmail: ${email}`);
       setEmployees(prev => prev.filter(e => e.id !== emp.id));
     } catch (err) {
-      console.error('Restore error:', err);
       alert("เกิดข้อผิดพลาด: " + (err instanceof Error ? err.message : "ไม่ทราบสาเหตุ"));
     } finally {
       setLoading(false);
@@ -115,25 +95,8 @@ export default function DisabledEmployeesPage() {
     if (!confirm(`ยืนยันการลบคุณ ${emp.name} ออกจากระบบถาวร?`)) return;
     setLoading(true);
     try {
-      // 1. ลบ employee record ก่อน
-      const { error } = await supabase.from("employees").delete().eq("id", emp.id);
-      if (error) throw error;
-
-      // 2. ลบ user ออกจาก Auth (ถ้ามี) - ทำหลังจากลบ employee แล้ว
-      if (emp.user_id) {
-        try {
-          const res = await fetch('/employees/api', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: emp.user_id }) });
-          const result = await res.json();
-          if (!res.ok && !result.error?.includes('not found')) {
-            console.warn('ไม่สามารถลบ user จาก Auth:', result.error);
-            // ไม่ throw error เพราะ employees ลบสำเร็จแล้ว
-          }
-        } catch (deleteError) {
-          console.warn('ไม่สามารถลบ user จาก Auth:', deleteError);
-          // ไม่ throw error เพราะ employees ลบสำเร็จแล้ว
-        }
-      }
-
+      const res = await fetch(`/api/employees/${emp.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Delete failed');
       setEmployees(prev => prev.filter(e => e.id !== emp.id));
     } catch (err) {
       alert("ไม่สามารถลบข้อมูลได้: " + (err instanceof Error ? err.message : "ไม่ทราบสาเหตุ"));
@@ -150,9 +113,7 @@ export default function DisabledEmployeesPage() {
   }, [employees, searchQuery]);
 
   return (
-    // เปลี่ยนจาก <main> เป็น <div> — layout มี <main> ครอบอยู่แล้ว
     <div className="max-w-5xl mx-auto p-3 md:p-8">
-      {/* ── Header ── */}
       <header className="mb-5 md:mb-8 flex flex-col md:flex-row md:items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className="p-2.5 md:p-3 bg-slate-900 rounded-xl md:rounded-2xl text-white shadow-xl">
@@ -172,7 +133,6 @@ export default function DisabledEmployeesPage() {
       </header>
 
       <div className="bg-white rounded-[1.5rem] md:rounded-[2.5rem] border-4 border-white shadow-xl overflow-hidden min-h-[300px]">
-        {/* Search bar */}
         <div className="p-4 md:p-6 border-b border-slate-50 bg-slate-50/30 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
           <div className="relative w-full sm:w-72 md:w-96">
             <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
@@ -187,7 +147,6 @@ export default function DisabledEmployeesPage() {
           <div className="text-slate-400 text-sm font-bold shrink-0">ทั้งหมด {filtered.length} รายการ</div>
         </div>
 
-        {/* Employee list */}
         <div className="p-4 md:p-6 space-y-3">
           {loading ? (
             <div className="py-16 flex justify-center">

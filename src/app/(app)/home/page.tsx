@@ -1,7 +1,6 @@
 "use client";
 import React, { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
 import {
     Search, X, Clock, Briefcase,
     Pencil, Trash2, Maximize, Minimize, Users, Loader2, CheckCircle2,
@@ -10,10 +9,58 @@ import {
     CalendarRange, PlayCircle, Timer, Camera, Shield
 } from 'lucide-react';
 import Link from "next/link";
-import PhotoUploadModal from "@/components/PhotoUploadModal";
-import { uploadWorkPhoto } from "@/lib/uploadWorkPhoto";
+import PhotoUploadModal from '@/frontend/components/PhotoUploadModal';
+import { uploadWorkPhoto } from '@/frontend/lib/uploadWorkPhoto';
 
 interface Department { id: string; name: string; color_code: string; }
+
+function normalizeWork(w: Record<string, unknown>): WorkScheduleItem {
+    return {
+        id: String(w._id),
+        work_date: w.workDate ? String(w.workDate).substring(0, 10) : '',
+        end_date: w.endDate ? String(w.endDate).substring(0, 10) : null,
+        work_time: String(w.workTime ?? ''),
+        work_shift: String(w.workShift ?? ''),
+        department: String(w.department ?? ''),
+        detail: String(w.detail ?? ''),
+        worker_role: String(w.workerRole ?? ''),
+        worker: String(w.worker ?? ''),
+        employee_id: w.employeeId ? String(w.employeeId) : null,
+        employee_ids: Array.isArray(w.employeeIds) ? (w.employeeIds as unknown[]).map(String) : null,
+        user_id: w.userId ? String(w.userId) : null,
+        status: (w.status as 'pending' | 'inprogress' | 'complete') ?? null,
+        lat: (w.lat as number) ?? null,
+        lng: (w.lng as number) ?? null,
+        started_at: w.startedAt ? String(w.startedAt) : null,
+        completed_at: w.completedAt ? String(w.completedAt) : null,
+        start_photo_url: w.startPhotoUrl ? String(w.startPhotoUrl) : null,
+        complete_photo_url: w.completePhotoUrl ? String(w.completePhotoUrl) : null,
+        summary: w.summary ? String(w.summary) : null,
+    }
+}
+
+function normalizeEmployee(e: Record<string, unknown>): Employee {
+    const dept = e.departmentId as Record<string, unknown> | null
+    return {
+        id: String(e._id),
+        name: String(e.name ?? ''),
+        staff_id: e.staffId ? String(e.staffId) : null,
+        image_url: e.imageUrl ? String(e.imageUrl) : null,
+        departments: dept ? {
+            id: String(dept._id ?? ''),
+            name: String(dept.name ?? ''),
+            color_code: String(dept.colorCode ?? ''),
+        } : null,
+    }
+}
+
+function normalizeDept(d: Record<string, unknown>): Department {
+    return {
+        id: String(d._id),
+        name: String(d.name ?? ''),
+        color_code: String(d.colorCode ?? ''),
+    }
+}
 
 interface Employee {
     id: string;
@@ -115,7 +162,6 @@ const searchPlaces = async (query: string): Promise<LongdoResult[]> => {
 
 export default function HomePage() {
     const router = useRouter();
-    const supabase = useMemo(() => createClient(), []);
     const deptDropdownRef = useRef<HTMLDivElement>(null);
 
     const [user, setUser] = useState<{ id: string; role: string; name?: string; employeeId?: string | null } | null>(null);
@@ -178,34 +224,43 @@ export default function HomePage() {
 
     const refreshData = useCallback(async (activeRole: string, activeEmployeeId: string | null) => {
         try {
-            let scheduleQuery = supabase.from("work_schedule").select("*");
-            if (activeRole !== 'admin' && activeEmployeeId)
-                scheduleQuery = scheduleQuery.contains('employee_ids', [activeEmployeeId]);
-            const [scheduleRes, empsRes, deptsRes] = await Promise.all([
-                scheduleQuery,
-                supabase.from("employees").select("*, departments:department_id(*)").eq("is_active", true),
-                supabase.from("departments").select("*"),
-            ]);
-            const sortedData = (scheduleRes.data as WorkScheduleItem[] || []).sort((a, b) =>
-                `${a.work_date}T${a.work_time}`.localeCompare(`${b.work_date}T${b.work_time}`)
-            );
-            setAllWorkData(sortedData);
-            setMasterEmployees(empsRes.data as Employee[] || []);
-            setDepartments(deptsRes.data as Department[] || []);
+            const wsUrl = activeRole !== 'admin' && activeRole !== 'owner' && activeEmployeeId
+                ? `/api/work-schedule?employeeId=${activeEmployeeId}`
+                : '/api/work-schedule'
+            const [wsRes, empsRes, deptsRes] = await Promise.all([
+                fetch(wsUrl),
+                fetch('/api/employees?active=true'),
+                fetch('/api/departments'),
+            ])
+            if (wsRes.ok) {
+                const { schedules } = await wsRes.json()
+                const normalized = (schedules as Record<string, unknown>[]).map(normalizeWork)
+                const sorted = normalized.sort((a, b) =>
+                    `${a.work_date}T${a.work_time}`.localeCompare(`${b.work_date}T${b.work_time}`)
+                )
+                setAllWorkData(sorted)
+            }
+            if (empsRes.ok) {
+                const { employees } = await empsRes.json()
+                setMasterEmployees((employees as Record<string, unknown>[]).map(normalizeEmployee))
+            }
+            if (deptsRes.ok) {
+                const { departments } = await deptsRes.json()
+                setDepartments((departments as Record<string, unknown>[]).map(normalizeDept))
+            }
         } catch (err) { console.error(err); }
-    }, [supabase]);
+    }, []);
 
     useEffect(() => {
         async function init() {
             setLoading(true);
-            const { data: { user: authUser } } = await supabase.auth.getUser();
-            if (!authUser) return router.push("/auth/login");
-            const { data: profile } = await supabase.from("profiles").select("role, email").eq("id", authUser.id).single();
-            const { data: employee } = await supabase.from("employees").select("id, name").eq("user_id", authUser.id).single();
+            const res = await fetch('/api/profiles/me')
+            if (!res.ok) { router.push('/auth/login'); return; }
+            const { user: profile } = await res.json()
             const userRole = profile?.role || 'user';
-            const userName = employee?.name || profile?.email?.split('@')[0] || "Admin";
-            const employeeId = employee?.id || null;
-            setUser({ id: authUser.id, role: userRole, name: userName, employeeId });
+            const userName = profile?.employeeName || profile?.email?.split('@')[0] || 'User';
+            const employeeId = profile?.employeeId || null;
+            setUser({ id: String(profile._id), role: userRole, name: userName, employeeId });
             await refreshData(userRole, employeeId);
             setLoading(false);
         }
@@ -215,7 +270,7 @@ export default function HomePage() {
         };
         document.addEventListener("mousedown", handleClickOutside);
         return () => document.removeEventListener("mousedown", handleClickOutside);
-    }, [supabase, router, refreshData]);
+    }, [router, refreshData]);
 
     const handleLocationInput = (value: string) => {
         setFormData(prev => ({ ...prev, department: value }));
@@ -262,26 +317,29 @@ export default function HomePage() {
         setSubmitting(true);
         const coords = formData.department ? await geocodeDepartment(formData.department) : null;
         const payload = {
-            work_date: formData.work_date,
-            end_date: formData.end_date || formData.work_date,
-            work_time: formData.work_time,
-            work_shift: getThaiShift(formData.work_time),
+            workDate: formData.work_date,
+            endDate: formData.end_date || formData.work_date,
+            workTime: formData.work_time,
+            workShift: getThaiShift(formData.work_time),
             department: formData.department,
             detail: formData.detail,
-            worker_role: formData.worker_role.join(", "),
+            workerRole: formData.worker_role.join(", "),
             worker: formData.selected_workers.join(", "),
-            employee_id: formData.selected_worker_ids[0] || null,
-            employee_ids: formData.selected_worker_ids,
-            user_id: user?.id,
+            employeeId: formData.selected_worker_ids[0] || null,
+            employeeIds: formData.selected_worker_ids,
             lat: coords?.lat ?? null,
             lng: coords?.lng ?? null,
         };
-        const { error } = editingId
-            ? await supabase.from("work_schedule").update(payload).eq("id", editingId)
-            : await supabase.from("work_schedule").insert([{ ...payload, status: 'pending' }]);
-        if (error) {
-            console.error('Submit error:', error);
-            alert('บันทึกไม่สำเร็จ: ' + error.message);
+        const method = editingId ? 'PATCH' : 'POST'
+        const url = editingId ? `/api/work-schedule/${editingId}` : '/api/work-schedule'
+        const res = await fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        })
+        if (!res.ok) {
+            const { error } = await res.json().catch(() => ({ error: 'Unknown' }))
+            alert('บันทึกไม่สำเร็จ: ' + error);
         } else if (user) {
             setFormData(initialFormState); setEditingId(null); refreshData(user.role, user.employeeId ?? null);
         }
@@ -299,25 +357,26 @@ export default function HomePage() {
         const { mode, id } = photoModal;
 
         try {
-            const photoUrl = await uploadWorkPhoto(supabase, file, id, mode);
+            const photoUrl = await uploadWorkPhoto(file, id, mode);
 
             const status = mode === 'start' ? 'inprogress' : 'complete';
             const updateData: Record<string, string> = { status };
             if (mode === 'start') {
-                updateData.started_at = new Date().toISOString();
-                updateData.start_photo_url = photoUrl;
+                updateData.startedAt = new Date().toISOString();
+                updateData.startPhotoUrl = photoUrl;
             } else {
-                updateData.completed_at = new Date().toISOString();
-                updateData.complete_photo_url = photoUrl;
-                if (summary) {
-                    updateData.summary = summary;
-                }
+                updateData.completedAt = new Date().toISOString();
+                updateData.completePhotoUrl = photoUrl;
+                if (summary) updateData.summary = summary;
             }
 
-            const { error } = await supabase.from("work_schedule").update(updateData).eq("id", id);
-            if (error) {
-                console.error('Update error:', error);
-                alert('บันทึกข้อมูลไม่สำเร็จ: ' + error.message);
+            const res = await fetch(`/api/work-schedule/${id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(updateData),
+            })
+            if (!res.ok) {
+                alert('บันทึกข้อมูลไม่สำเร็จ');
                 return;
             }
             if (user) refreshData(user.role, user.employeeId ?? null);
@@ -325,8 +384,7 @@ export default function HomePage() {
             setWorkSummary('');
         } catch (err) {
             console.error('Upload error:', err);
-            const errorMessage = err instanceof Error ? err.message : 'กรุณาตรวจสอบว่าสร้าง bucket "work-photos" ใน Supabase Storage แล้ว';
-            alert('อัพโหลดรูปไม่สำเร็จ: ' + errorMessage);
+            alert('อัพโหลดรูปไม่สำเร็จ: ' + (err instanceof Error ? err.message : 'Unknown error'));
         }
     };
 
@@ -661,7 +719,7 @@ export default function HomePage() {
                                         <button onClick={async (e) => {
                                             e.stopPropagation();
                                             if (confirm('ลบงานนี้?')) {
-                                                await supabase.from("work_schedule").delete().eq("id", item.id);
+                                                await fetch(`/api/work-schedule/${item.id}`, { method: 'DELETE' });
                                                 if (user) refreshData(user.role, user.employeeId ?? null);
                                             }
                                         }} className="w-10 h-10 md:w-14 md:h-14 flex items-center justify-center bg-red-50 rounded-xl md:rounded-2xl shadow-sm border-2 border-red-100 text-red-500 hover:bg-red-500 hover:text-white transition-all">

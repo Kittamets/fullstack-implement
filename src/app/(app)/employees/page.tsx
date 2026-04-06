@@ -2,7 +2,23 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
+import { z } from "zod";
+
+const createEmployeeSchema = z.object({
+    name: z
+        .string()
+        .trim()
+        .min(1, 'กรุณากรอกข้อมูลให้ครบถ้วน')
+        .max(200, 'ชื่อ-นามสกุลของท่านมีความยาวเกินไป')
+        .regex(/^[\u0E00-\u0E7Fa-zA-Z\s'-]+$/, 'กรุณากรอกตัวอักษรไทยหรืออังกฤษเท่านั้น'),
+    email: z.string().trim().min(1, 'กรุณากรอกข้อมูลให้ครบถ้วน').email('กรุณากรอกอีเมลให้ถูกต้อง').max(200, 'กรุณากรอกอีเมลให้ถูกต้อง'),
+    password: z
+        .string()
+        .min(1, 'กรุณากรอกข้อมูลให้ครบถ้วน')
+        .min(15, 'รหัสผ่านต้องมีอย่างน้อย 15 ตัวอักษร')
+        .max(128, 'รหัสผ่านของท่านมีจำนวนยาวเกินไป'),
+});
+
 import {
     Users, ArrowLeft, Camera, Loader2, Plus, Edit3, Save, Search, UserX, RotateCcw, Mail, Lock, KeyRound, UserCheck, Clock, CheckCircle, X
 } from "lucide-react";
@@ -30,18 +46,40 @@ interface PendingEmployee {
     name: string;
     user_id: string | null;
     created_at: string;
-    profiles?: {
-        email: string;
-    } | null;
+    profiles?: { email: string; } | null;
 }
 
-interface EmployeePayload {
-    name: string;
-    department_id: string;
-    image_url: string | null;
-    is_active: boolean;
-    user_id?: string | null;
-    staff_id?: string;
+function normalizeEmployee(e: Record<string, unknown>): Employee {
+    const dept = e.departmentId as Record<string, unknown> | null
+    return {
+        id: String(e._id),
+        staff_id: e.staffId ? String(e.staffId) : '',
+        name: String(e.name ?? ''),
+        image_url: e.imageUrl ? String(e.imageUrl) : null,
+        department_id: dept ? String(dept._id ?? '') : null,
+        departments: dept ? {
+            id: String(dept._id ?? ''),
+            name: String(dept.name ?? ''),
+            color_code: String(dept.colorCode ?? ''),
+        } : null,
+        is_active: Boolean(e.isActive ?? true),
+        user_id: e.userId ? String(e.userId) : null,
+    }
+}
+
+function normalizePending(e: Record<string, unknown>): PendingEmployee {
+    const userDoc = e.userId as Record<string, unknown> | null
+    return {
+        id: String(e._id),
+        name: String(e.name ?? ''),
+        user_id: userDoc ? String(userDoc._id ?? '') : null,
+        created_at: e.createdAt ? String(e.createdAt) : '',
+        profiles: userDoc?.email ? { email: String(userDoc.email) } : null,
+    }
+}
+
+function normalizeDept(d: Record<string, unknown>): Department {
+    return { id: String(d._id), name: String(d.name ?? ''), color_code: String(d.colorCode ?? '') }
 }
 
 function ResetPasswordModal({ employee, onClose }: { employee: Employee; onClose: () => void; }) {
@@ -58,10 +96,10 @@ function ResetPasswordModal({ employee, onClose }: { employee: Employee; onClose
         if (newPassword.length < 6) { setError("รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร"); return; }
         setLoading(true);
         try {
-            const res = await fetch("/employees/api", {
+            const res = await fetch(`/api/employees/${employee.id}`, {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ userId: employee.user_id, newPassword }),
+                body: JSON.stringify({ newPassword }),
             });
             const result = await res.json();
             if (!res.ok) throw new Error(result.error || "เกิดข้อผิดพลาด");
@@ -83,7 +121,7 @@ function ResetPasswordModal({ employee, onClose }: { employee: Employee; onClose
                     <div className="p-2.5 bg-slate-900 rounded-xl text-white"><KeyRound size={17} /></div>
                     <div>
                         <h2 className="text-base font-black text-slate-900">รีเซ็ตรหัสผ่าน</h2>
-                        <p className="text-xs font-bold text-slate-400">{employee.name} <span className="text-slate-300">#{employee.staff_id}</span></p>
+                        <p className="text-xs font-bold text-slate-400">{employee.name} {employee.staff_id ? <span className="text-slate-300">#{employee.staff_id}</span> : null}</p>
                     </div>
                 </div>
                 {success ? (
@@ -126,9 +164,11 @@ function ApproveModal({ employee, onClose, onApprove }: { employee: PendingEmplo
 
     useEffect(() => {
         async function fetchDepartments() {
-            const supabase = createClient();
-            const { data } = await supabase.from("departments").select("*").order("name");
-            if (data) setDepartments(data);
+            const res = await fetch('/api/departments');
+            if (res.ok) {
+                const { departments: data } = await res.json();
+                setDepartments((data as Record<string, unknown>[]).map(normalizeDept));
+            }
         }
         fetchDepartments();
     }, []);
@@ -190,7 +230,6 @@ function ApproveModal({ employee, onClose, onApprove }: { employee: PendingEmplo
 
 export default function EmployeesPage() {
     const router = useRouter();
-    const supabase = useMemo(() => createClient(), []);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const [employees, setEmployees] = useState<Employee[]>([]);
@@ -215,79 +254,36 @@ export default function EmployeesPage() {
         return `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=random&color=fff&size=200&font-size=0.35`;
     };
 
-    const getNextStaffId = useCallback(async () => {
-        const { data } = await supabase.from("employees").select("staff_id").order("staff_id", { ascending: false }).limit(1);
-        if (data && data.length > 0) {
-            const lastId = parseInt(data[0].staff_id);
-            return isNaN(lastId) ? "1" : (lastId + 1).toString();
-        }
-        return "1";
-    }, [supabase]);
-
-    const resetForm = useCallback(async () => {
+    const resetForm = useCallback(() => {
         setIsEditing(false);
         setEditId(null);
         setPreviewUrl(null);
         setFile(null);
         setShowForm(false);
-        const nextId = await getNextStaffId();
-        setFormData({ name: "", staff_id: nextId, department_id: "", email: "", password: "" });
-    }, [getNextStaffId]);
+        setFormData({ name: "", staff_id: "", department_id: "", email: "", password: "" });
+    }, []);
 
     const refreshData = useCallback(async () => {
         try {
-            // ดึงพนักงานที่ active
-            const { data: empData } = await supabase.from("employees").select("*, departments(*)").eq("is_active", true).order("created_at", { ascending: false });
-            // ดึงพนักงานที่รออนุมัติ - ใช้foreign key relationship
-            let pendingData: PendingEmployee[] = []
-            try {
-                const { data: empData, error: empError } = await supabase
-                    .from("employees")
-                    .select(`
-                        id,
-                        name,
-                        user_id,
-                        created_at
-                    `)
-                    .eq("is_active", false)
-                    .not("user_id", "is", null)
-                    .order("created_at", { ascending: false })
-
-                if (empError) throw empError
-
-                // ดึง email จาก profiles แยก
-                if (empData && empData.length > 0) {
-                    const userIds = empData.map(e => e.user_id).filter((id): id is string => !!id)
-                    const { data: profilesData } = await supabase
-                        .from("profiles")
-                        .select("id, email")
-                        .in("id", userIds)
-
-                    const profileMap = new Map((profilesData || []).map(p => [p.id, p.email]))
-
-                    pendingData = empData.map((emp: { id: string; name: string; user_id: string | null; created_at: string }) => ({
-                        id: emp.id,
-                        name: emp.name,
-                        user_id: emp.user_id,
-                        created_at: emp.created_at,
-                        profiles: emp.user_id ? { email: profileMap.get(emp.user_id) || '' } : null
-                    }))
-                }
-            } catch (err) {
-                console.error("Pending fetch error:", err)
+            const [empRes, pendingRes, deptRes] = await Promise.all([
+                fetch('/api/employees?active=true'),
+                fetch('/api/employees?pending=true'),
+                fetch('/api/departments'),
+            ]);
+            if (empRes.ok) {
+                const { employees: data } = await empRes.json();
+                setEmployees((data as Record<string, unknown>[]).map(normalizeEmployee));
             }
-            const { data: deptData } = await supabase.from("departments").select("*").order("name");
-
-            if (empData) setEmployees(empData as unknown as Employee[]);
-            if (pendingData) setPendingEmployees(pendingData.map((p) => ({ ...p, profiles: Array.isArray(p.profiles) ? p.profiles[0] : p.profiles })));
-            if (deptData) setDepartments(deptData as Department[]);
-
-            if (!isEditing) {
-                const nextId = await getNextStaffId();
-                setFormData(prev => ({ ...prev, staff_id: nextId }));
+            if (pendingRes.ok) {
+                const { employees: data } = await pendingRes.json();
+                setPendingEmployees((data as Record<string, unknown>[]).map(normalizePending));
+            }
+            if (deptRes.ok) {
+                const { departments: data } = await deptRes.json();
+                setDepartments((data as Record<string, unknown>[]).map(normalizeDept));
             }
         } catch (err) { console.error("Refresh Error:", err); }
-    }, [supabase, isEditing, getNextStaffId]);
+    }, []);
 
     useEffect(() => {
         const init = async () => { setLoading(true); await refreshData(); setLoading(false); };
@@ -304,141 +300,37 @@ export default function EmployeesPage() {
     const handleDisable = async (emp: Employee) => {
         if (!confirm(`ย้ายคุณ ${emp.name} ไปที่หน้าพนักงานที่ออกแล้ว?`)) return;
         try {
-            // 1. อัปเดต employees table ก่อน (set user_id = null เพื่อไม่มี foreign key constraint)
-            const { error } = await supabase.from("employees").update({ is_active: false, user_id: null }).eq("id", emp.id);
-            if (error) throw error;
-
-            // 2. ลบ user ออกจาก Auth (ถ้ามี) - ทำหลังจากอัปเดต employees แล้ว
-            if (emp.user_id) {
-                try {
-                    const res = await fetch('/employees/api', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: emp.user_id }) });
-                    const result = await res.json();
-                    if (!res.ok && !result.error?.includes('not found')) {
-                        console.warn('ไม่สามารถลบ user จาก Auth:', result.error);
-                        // ไม่ throw error เพราะ employees อัปเดตสำเร็จแล้ว
-                    }
-                } catch (deleteError) {
-                    console.warn('ไม่สามารถลบ user จาก Auth:', deleteError);
-                    // ไม่ throw error เพราะ employees อัปเดตสำเร็จแล้ว
-                }
-            }
-
+            const res = await fetch(`/api/employees/${emp.id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ isActive: false, userId: null }),
+            });
+            if (!res.ok) throw new Error('Update failed');
             setEmployees(prev => prev.filter(e => e.id !== emp.id));
-            const nextId = await getNextStaffId();
-            setFormData(prev => ({ ...prev, staff_id: nextId }));
         } catch (err) { alert("เกิดข้อผิดพลาด: " + (err instanceof Error ? err.message : "ไม่ทราบสาเหตุ")); }
     };
 
     const handleApprove = async (employee: PendingEmployee, departmentId: string) => {
-        console.log('handleApprove called:', { employee, departmentId })
+        if (!departmentId) { alert('กรุณาเลือกแผนก'); return; }
         try {
-            // ตรวจสอบข้อมูลก่อนอนุมัติ
-            if (!employee?.user_id) {
-                throw new Error('ไม่พบ user_id ของพนักงาน')
-            }
-            if (!departmentId) {
-                throw new Error('กรุณาเลือกแผนก')
-            }
-
-            // หา staff_id ถัดไป (ใช้ serial number ที่ไม่ซ้ำ)
-            const { data: lastEmp, error: staffIdError } = await supabase
-                .from("employees")
-                .select("staff_id")
-                .not("staff_id", "is", null)
-                .order("created_at", { ascending: false })
-                .limit(1)
-
-            if (staffIdError) {
-                console.error('Error fetching last staff_id:', staffIdError)
-            }
-
-            let nextStaffId: string
-            if (lastEmp && lastEmp.length > 0 && lastEmp[0].staff_id) {
-                const lastId = parseInt(lastEmp[0].staff_id)
-                nextStaffId = isNaN(lastId) ? "1" : (lastId + 1).toString()
-            } else {
-                nextStaffId = "1"
-            }
-
-            // ตรวจสอบว่า staff_id นี้ซ้ำหรือไม่
-            const { data: existingStaff } = await supabase
-                .from("employees")
-                .select("id")
-                .eq("staff_id", nextStaffId)
-                .maybeSingle()
-
-            if (existingStaff) {
-                // ถ้าซ้ำ ให้หา max staff_id ใหม่
-                const { data: maxStaff } = await supabase
-                    .from("employees")
-                    .select("staff_id")
-                    .not("staff_id", "is", null)
-                    .order("staff_id", { ascending: false })
-                    .limit(1)
-
-                if (maxStaff && maxStaff.length > 0 && maxStaff[0].staff_id) {
-                    const maxId = parseInt(maxStaff[0].staff_id)
-                    nextStaffId = isNaN(maxId) ? "1" : (maxId + 1).toString()
-                }
-            }
-
-            // อัปเดต employee ให้เป็น active พร้อม staff_id
-            const { error: empError } = await supabase
-                .from("employees")
-                .update({
-                    is_active: true,
-                    department_id: departmentId,
-                    staff_id: nextStaffId
-                })
-                .eq("id", employee.id)
-
-            if (empError) {
-                throw new Error(`ไม่สามารถอัปเดต employee: ${empError.message}`)
-            }
-
-            // อัปเดต profiles ให้ is_approved = true
-            const { error: profileError } = await supabase
-                .from("profiles")
-                .update({ is_approved: true })
-                .eq("id", employee.user_id)
-
-            if (profileError) {
-                console.error('Profile update error:', profileError)
-                // ไม่ throw error เพราะ employee อัปเดตสำเร็จแล้ว
-            }
-
-            // Refresh ข้อมูล
-            await refreshData()
-            setApproveTarget(null)
+            const res = await fetch(`/api/employees/${employee.id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ approve: true, departmentId }),
+            });
+            if (!res.ok) throw new Error('Approve failed');
+            await refreshData();
+            setApproveTarget(null);
         } catch (err) {
-            console.error('Approve error:', err)
-            alert("เกิดข้อผิดพลาด: " + (err instanceof Error ? err.message : "ไม่ทราบสาเหตุ"))
+            alert("เกิดข้อผิดพลาด: " + (err instanceof Error ? err.message : "ไม่ทราบสาเหตุ"));
         }
     };
 
     const handleReject = async (employee: PendingEmployee) => {
         if (!confirm(`ปฏิเสธคำขอของ ${employee.name}?\nบัญชีนี้จะถูกลบออกจากระบบ`)) return;
-
         try {
-            // 1. ลบ employee record ก่อน (เพราะไม่มี foreign key ไปหา auth.users ในทางกลับกัน)
-            const { error } = await supabase.from("employees").delete().eq("id", employee.id);
-            if (error) throw error;
-
-            // 2. ลบ user ออกจาก auth (ถ้ามี) - ทำหลังจากลบ employee แล้ว
-            if (employee.user_id) {
-                try {
-                    const res = await fetch('/employees/api', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: employee.user_id }) });
-                    if (!res.ok) {
-                        const result = await res.json();
-                        console.warn('ไม่สามารถลบ user จาก Auth:', result.error);
-                        // ไม่ throw error เพราะ employees ลบสำเร็จแล้ว
-                    }
-                } catch (deleteError) {
-                    console.warn('ไม่สามารถลบ user จาก Auth:', deleteError);
-                    // ไม่ throw error เพราะ employees ลบสำเร็จแล้ว
-                }
-            }
-
+            const res = await fetch(`/api/employees/${employee.id}`, { method: 'DELETE' });
+            if (!res.ok) throw new Error('Delete failed');
             setPendingEmployees(prev => prev.filter(e => e.id !== employee.id));
         } catch (err) {
             alert("เกิดข้อผิดพลาด: " + (err instanceof Error ? err.message : "ไม่ทราบสาเหตุ"));
@@ -453,86 +345,54 @@ export default function EmployeesPage() {
 
             // อัปโหลดรูปภาพถ้ามี
             if (file) {
-                const fileName = `${Date.now()}-${file.name.replace(/\s+/g, '_')}`;
-                const { error: uploadError } = await supabase.storage.from('employee-photos').upload(`avatars/${fileName}`, file);
-                if (uploadError) throw new Error(`ไม่สามารถอัปโหลดรูปภาพ: ${uploadError.message}`);
-                finalImageUrl = supabase.storage.from('employee-photos').getPublicUrl(`avatars/${fileName}`).data.publicUrl;
+                const formDataUpload = new FormData();
+                formDataUpload.append('file', file);
+                const uploadRes = await fetch('/api/files', { method: 'POST', body: formDataUpload });
+                if (!uploadRes.ok) throw new Error('ไม่สามารถอัปโหลดรูปภาพ');
+                const { url } = await uploadRes.json();
+                finalImageUrl = url;
             }
-
-            let userIdForEmployee: string | null = null;
-
-            // สร้างบัญชีผู้ใช้ใหม่สำหรับพนักงาน (เฉพาะตอนเพิ่มใหม่)
-            if (!isEditing && formData.email && formData.password) {
-                const res = await fetch('/employees/api', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ email: formData.email, password: formData.password, name: formData.name })
-                });
-
-                if (!res.ok) {
-                    const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
-                    throw new Error(errorData.error || `HTTP ${res.status}`);
-                }
-
-                const authRes = await res.json();
-                if (authRes.error) throw new Error(authRes.error);
-
-                userIdForEmployee = authRes.user.id;
-
-                // อัปเดต profile ให้อนุมัติแล้ว
-                const { error: profileUpdateError } = await supabase
-                    .from("profiles")
-                    .upsert({
-                        id: userIdForEmployee,
-                        email: formData.email,
-                        is_approved: true,
-                        role: 'user'
-                    }, { onConflict: 'id' });
-
-                if (profileUpdateError) {
-                    console.error('Profile update error:', profileUpdateError);
-                }
-            }
-
-            const payload: EmployeePayload = {
-                name: formData.name.trim(),
-                department_id: formData.department_id,
-                image_url: finalImageUrl,
-                is_active: true,
-                user_id: userIdForEmployee
-            };
 
             if (isEditing && editId) {
-                const { error: updateError } = await supabase.from("employees").update(payload).eq("id", editId);
-                if (updateError) throw new Error(`ไม่สามารถอัปเดตข้อมูล: ${updateError.message}`);
-            } else {
-                // ตรวจสอบว่ามี staff_id นี้อยู่แล้วหรือไม่
-                const { data: existingStaff } = await supabase
-                    .from("employees")
-                    .select("id")
-                    .eq("staff_id", formData.staff_id)
-                    .maybeSingle();
-
-                if (existingStaff) {
-                    // หา staff_id ใหม่ที่ไม่ซ้ำ
-                    const { data: lastEmp } = await supabase
-                        .from("employees")
-                        .select("staff_id")
-                        .not("staff_id", "is", null)
-                        .order("staff_id", { ascending: false })
-                        .limit(1);
-
-                    const nextId = lastEmp && lastEmp.length > 0 && lastEmp[0].staff_id
-                        ? (parseInt(lastEmp[0].staff_id) + 1).toString()
-                        : "1";
-                    formData.staff_id = nextId;
+                const res = await fetch(`/api/employees/${editId}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: formData.name.trim(),
+                        departmentId: formData.department_id || null,
+                        imageUrl: finalImageUrl,
+                    }),
+                });
+                if (!res.ok) {
+                    const { error } = await res.json().catch(() => ({ error: 'Update failed' }));
+                    throw new Error(error);
                 }
-
-                const { error: insertError } = await supabase
-                    .from("employees")
-                    .insert([{ ...payload, staff_id: formData.staff_id }]);
-
-                if (insertError) throw new Error(`ไม่สามารถเพิ่มพนักงาน: ${insertError.message}`);
+            } else {
+                const validation = createEmployeeSchema.safeParse({
+                    name: formData.name.trim(),
+                    email: formData.email,
+                    password: formData.password,
+                })
+                if (!validation.success) {
+                    alert(validation.error.issues[0]?.message ?? 'ข้อมูลไม่ถูกต้อง')
+                    setUploading(false)
+                    return
+                }
+                const res = await fetch('/api/employees', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: formData.name.trim(),
+                        email: formData.email,
+                        password: formData.password,
+                        departmentId: formData.department_id || null,
+                        imageUrl: finalImageUrl,
+                    }),
+                });
+                if (!res.ok) {
+                    const { error } = await res.json().catch(() => ({ error: 'Create failed' }));
+                    throw new Error(error);
+                }
             }
 
             alert(isEditing ? "อัปเดตข้อมูลสำเร็จ" : "เพิ่มพนักงานและสร้างบัญชีสำเร็จ");
@@ -563,7 +423,7 @@ export default function EmployeesPage() {
                     <Link href="/employees/disabled" className="bg-white border-2 border-slate-200 px-3 py-2 rounded-xl font-bold text-slate-600 hover:text-slate-900 flex items-center gap-1.5 transition-all shadow-sm text-sm">
                         <UserX size={16} className="text-slate-900" /> พนักงานที่ออกแล้ว
                     </Link>
-                    <button onClick={() => router.push("/")} className="text-slate-400 hover:text-slate-900 font-bold text-sm flex items-center gap-1.5 ml-2 px-2 transition-colors">
+                    <button onClick={() => router.push("/home")} className="text-slate-400 hover:text-slate-900 font-bold text-sm flex items-center gap-1.5 ml-2 px-2 transition-colors">
                         <ArrowLeft size={16} /> กลับ
                     </button>
                 </div>
@@ -638,14 +498,14 @@ export default function EmployeesPage() {
 
                                         {!isEditing && (
                                             <div className="space-y-2 pt-2 border-t-2 border-slate-50">
-                                                <label className="text-[10px] font-black uppercase text-slate-400 ml-2">บัญชี Login</label>
+                                                <label className="text-[10px] font-black uppercase text-slate-400 ml-2">บัญชีล็อคอิน</label>
                                                 <div className="relative">
                                                     <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-300" size={16} />
-                                                    <input type="email" placeholder="Email" className="w-full pl-10 p-3.5 bg-slate-50 border-2 border-transparent focus:border-slate-900 rounded-xl font-bold outline-none text-sm" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} required={!isEditing} />
+                                                    <input type="email" placeholder="อีเมล" className="w-full pl-10 p-3.5 bg-slate-50 border-2 border-transparent focus:border-slate-900 rounded-xl font-bold outline-none text-sm" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} required={!isEditing} />
                                                 </div>
                                                 <div className="relative">
                                                     <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-300" size={16} />
-                                                    <input type="password" placeholder="Password (6+ ตัวอักษร)" className="w-full pl-10 p-3.5 bg-slate-50 border-2 border-transparent focus:border-slate-900 rounded-xl font-bold outline-none text-sm" value={formData.password} onChange={(e) => setFormData({ ...formData, password: e.target.value })} required={!isEditing} minLength={6} />
+                                                    <input type="password" placeholder="รหัสผ่าน (อย่างน้อย 15 ตัวอักษร)" className="w-full pl-10 p-3.5 bg-slate-50 border-2 border-transparent focus:border-slate-900 rounded-xl font-bold outline-none text-sm" value={formData.password} onChange={(e) => setFormData({ ...formData, password: e.target.value })} required={!isEditing} minLength={15} />
                                                 </div>
                                             </div>
                                         )}

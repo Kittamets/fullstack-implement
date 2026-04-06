@@ -1,23 +1,41 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
 import {
     Users, ArrowLeft, Plus, Trash2, Shield, Mail, Lock, Loader2, X, Crown
 } from "lucide-react";
 import Link from "next/link";
+import { z } from "zod";
+
+const addAdminSchema = z.object({
+    fullName: z
+        .string()
+        .trim()
+        .min(1, 'กรุณากรอกข้อมูลให้ครบถ้วน')
+        .max(200, 'ชื่อ-นามสกุลของท่านมีความยาวเกินไป')
+        .regex(/^[\u0E00-\u0E7Fa-zA-Z\s'-]+$/, 'กรุณากรอกตัวอักษรไทยหรืออังกฤษเท่านั้น'),
+    email: z
+        .string()
+        .trim().min(1, 'กรุณากรอกข้อมูลให้ครบถ้วน')
+        .email('กรุณากรอกอีเมลให้ถูกต้อง')
+        .max(200, 'กรุณากรอกอีเมลให้ถูกต้อง'),
+    password: z
+        .string()
+        .min(1, 'กรุณากรอกข้อมูลให้ครบถ้วน')
+        .min(15, 'รหัสผ่านต้องมีอย่างน้อย 15 ตัวอักษร')
+        .max(128, 'รหัสผ่านของท่านมีจำนวนยาวเกินไป'),
+});
 
 interface AdminUser {
-    id: string;
+    _id: string;
     email: string;
     role: string;
-    created_at: string;
+    createdAt: string;
 }
 
 export default function AdminManagementPage() {
     const router = useRouter();
-    const supabase = useMemo(() => createClient(), []);
 
     const [admins, setAdmins] = useState<AdminUser[]>([]);
     const [loading, setLoading] = useState(true);
@@ -25,102 +43,70 @@ export default function AdminManagementPage() {
     const [showAddForm, setShowAddForm] = useState(false);
     const [submitting, setSubmitting] = useState(false);
 
-    // Form state
-    const [formData, setFormData] = useState({
-        email: "",
-        password: "",
-    });
+    const [formData, setFormData] = useState({ fullName: "", email: "", password: "" });
     const [error, setError] = useState<string | null>(null);
 
-    // Check if current user is owner
     useEffect(() => {
-        async function checkOwner() {
-            const { data: { user } } = await supabase.auth.getUser();
-            if (user) {
-                const { data: profile } = await supabase
-                    .from("profiles")
-                    .select("role")
-                    .eq("id", user.id)
-                    .single();
-
-                const role = profile?.role || 'user';
-                setUserRole(role);
-
-                // Redirect non-owners
-                if (role !== 'owner') {
-                    router.push('/home');
-                    return;
-                }
-            }
+        async function init() {
+            const res = await fetch('/api/profiles/me');
+            if (!res.ok) { router.push('/home'); return; }
+            const { user } = await res.json();
+            const role = user?.role || 'user';
+            setUserRole(role);
+            if (role !== 'owner') { router.push('/home'); return; }
             await fetchAdmins();
             setLoading(false);
         }
-        checkOwner();
-    }, [supabase, router]);
+        init();
+    }, [router]);
 
     const fetchAdmins = async () => {
-        const { data, error } = await supabase
-            .from("profiles")
-            .select("id, email, role, created_at")
-            .in("role", ["admin", "owner"])
-            .order("created_at", { ascending: false });
-
-        if (!error && data) {
-            setAdmins(data as AdminUser[]);
+        const res = await fetch('/api/admin/users');
+        if (res.ok) {
+            const { admins: users } = await res.json();
+            setAdmins(users ?? []);
         }
     };
 
     const handleAddAdmin = async (e: React.FormEvent) => {
         e.preventDefault();
         setError(null);
+
+        const parsed = addAdminSchema.safeParse(formData);
+        if (!parsed.success) {
+            setError(parsed.error.issues[0]?.message ?? 'ข้อมูลไม่ถูกต้อง');
+            return;
+        }
+
         setSubmitting(true);
-
         try {
-            // Call API to create admin user
-            const res = await fetch("/admin-management/api", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    email: formData.email,
-                    password: formData.password,
-                }),
+            const res = await fetch('/api/admin/users', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fullName: formData.fullName, email: formData.email, password: formData.password }),
             });
-
             const result = await res.json();
-
-            if (!res.ok) {
-                throw new Error(result.error || "Failed to create admin");
-            }
-
-            // Success
-            setFormData({ email: "", password: "" });
+            if (!res.ok) throw new Error(result.error || 'Failed to create admin');
+            setFormData({ fullName: "", email: "", password: "" });
             setShowAddForm(false);
             await fetchAdmins();
         } catch (err: unknown) {
-            setError(err instanceof Error ? err.message : "An error occurred");
+            setError(err instanceof Error ? err.message : 'An error occurred');
         } finally {
             setSubmitting(false);
         }
     };
 
     const handleRemoveAdmin = async (adminId: string, adminEmail: string) => {
-        if (!confirm(`Are you sure you want to remove admin privileges from ${adminEmail}?`)) {
-            return;
-        }
-
-        const res = await fetch("/admin-management/api", {
-            method: "DELETE",
-            headers: { "Content-Type": "application/json" },
+        if (!confirm(`Are you sure you want to remove admin privileges from ${adminEmail}?`)) return;
+        const res = await fetch('/api/admin/users', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ userId: adminId }),
         });
-
         const result = await res.json();
-
-        if (!res.ok) {
-            alert(result.error || "Failed to remove admin");
-        } else {
-            await fetchAdmins();
-        }
+        if (!res.ok) { alert(result.error || 'Failed to remove admin'); }
+        else { await fetchAdmins(); }
     };
 
     if (loading) {
@@ -131,14 +117,10 @@ export default function AdminManagementPage() {
         );
     }
 
-    // Only owner can access this page
-    if (userRole !== 'owner') {
-        return null; // Will redirect
-    }
+    if (userRole !== 'owner') return null;
 
     return (
         <main className="max-w-5xl mx-auto p-4 md:p-8 min-h-screen bg-slate-50/30">
-            {/* Header */}
             <header className="mb-6 md:mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div className="flex items-center gap-3">
                     <div className="p-2.5 md:p-3 bg-slate-900 rounded-xl md:rounded-2xl text-white shadow-xl">
@@ -169,7 +151,6 @@ export default function AdminManagementPage() {
                 </div>
             </header>
 
-            {/* Admin List */}
             <section className="bg-white rounded-[1.5rem] md:rounded-[2.5rem] border-4 border-white shadow-xl overflow-hidden">
                 <div className="p-4 md:p-6 border-b border-slate-50 bg-slate-50/30">
                     <h3 className="text-base md:text-lg font-black text-slate-900 flex items-center gap-2">
@@ -186,7 +167,7 @@ export default function AdminManagementPage() {
                     ) : (
                         admins.map((admin) => (
                             <div
-                                key={admin.id}
+                                key={admin._id}
                                 className="p-4 md:p-6 flex items-center justify-between hover:bg-slate-50/50 transition-colors"
                             >
                                 <div className="flex items-center gap-3 md:gap-4">
@@ -202,7 +183,7 @@ export default function AdminManagementPage() {
                                                 {admin.role === 'owner' ? 'Owner' : 'Admin'}
                                             </span>
                                             <span className="text-[10px] text-slate-400">
-                                                {new Date(admin.created_at).toLocaleDateString('th-TH')}
+                                                {new Date(admin.createdAt).toLocaleDateString('th-TH')}
                                             </span>
                                         </div>
                                     </div>
@@ -210,7 +191,7 @@ export default function AdminManagementPage() {
 
                                 {admin.role !== 'owner' && (
                                     <button
-                                        onClick={() => handleRemoveAdmin(admin.id, admin.email)}
+                                        onClick={() => handleRemoveAdmin(admin._id, admin.email)}
                                         className="p-2 text-rose-400 hover:bg-rose-50 rounded-xl transition-all"
                                         title="ลบสิทธิ์แอดมิน"
                                     >
@@ -223,7 +204,6 @@ export default function AdminManagementPage() {
                 </div>
             </section>
 
-            {/* Add Admin Modal */}
             {showAddForm && (
                 <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center p-0 md:p-4">
                     <div
@@ -256,10 +236,21 @@ export default function AdminManagementPage() {
                         <form onSubmit={handleAddAdmin} className="space-y-4">
                             <div className="space-y-3">
                                 <div className="relative">
+                                    <Users className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={16} />
+                                    <input
+                                        type="text"
+                                        placeholder="ชื่อ-นามสกุล"
+                                        required
+                                        className="w-full pl-11 p-3.5 bg-slate-50 border-2 border-transparent focus:border-slate-900 rounded-xl font-bold outline-none text-sm"
+                                        value={formData.fullName}
+                                        onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
+                                    />
+                                </div>
+                                <div className="relative">
                                     <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={16} />
                                     <input
                                         type="email"
-                                        placeholder="Email"
+                                        placeholder="อีเมล"
                                         required
                                         className="w-full pl-11 p-3.5 bg-slate-50 border-2 border-transparent focus:border-slate-900 rounded-xl font-bold outline-none text-sm"
                                         value={formData.email}
@@ -270,9 +261,9 @@ export default function AdminManagementPage() {
                                     <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={16} />
                                     <input
                                         type="password"
-                                        placeholder="Password (6+ characters)"
+                                        placeholder="รหัสผ่าน (อย่างน้อย 15 ตัวอักษร)"
                                         required
-                                        minLength={6}
+                                        minLength={15}
                                         className="w-full pl-11 p-3.5 bg-slate-50 border-2 border-transparent focus:border-slate-900 rounded-xl font-bold outline-none text-sm"
                                         value={formData.password}
                                         onChange={(e) => setFormData({ ...formData, password: e.target.value })}

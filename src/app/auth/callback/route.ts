@@ -1,96 +1,63 @@
-import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { NextRequest, NextResponse } from 'next/server'
+import { googleClient } from '@/server/auth/google'
+import { handleGoogleUser } from '@/server/services/auth.service'
+import { setAuthCookies } from '@/server/auth/session'
+import { decodeIdToken } from 'arctic'
 
-export async function GET(req: Request) {
-  const { searchParams, origin } = new URL(req.url)
+export async function GET(request: NextRequest) {
+  const { searchParams } = request.nextUrl
   const code = searchParams.get('code')
+  const state = searchParams.get('state')
 
-  if (code) {
-    const supabase = await createClient()
-    const { data, error } = await supabase.auth.exchangeCodeForSession(code)
+  const storedState = request.cookies.get('oauth_state')?.value
+  const codeVerifier = request.cookies.get('oauth_verifier')?.value
 
-    if (error || !data.user) {
-      console.error('Auth callback error:', error)
-      return NextResponse.redirect(`${origin}/auth/login?error=auth_failed`)
-    }
-
-    try {
-      // เช็คว่าเป็น user ใหม่หรือ login ปกติ
-      const { data: profile, error: profileError } = await supabase
-        .from('profiles')
-        .select('is_approved, role, full_name')
-        .eq('id', data.user.id)
-        .maybeSingle()
-
-      // ถ้ามี error ที่ไม่ใช่ "ไม่พบข้อมูล" ให้ log ไว้
-      if (profileError && profileError.code !== 'PGRST116') {
-        console.error('Profile fetch error:', profileError)
-      }
-
-      const fullName = data.user.user_metadata?.full_name ||
-                       data.user.user_metadata?.name ||
-                       profile?.full_name ||
-                       data.user.email?.split('@')[0] ||
-                       'New User'
-
-      // ถ้าไม่มี profile หรือ is_approved ยังไม่ถูกตั้งค่า (user ใหม่)
-      const isNewUser = !profile || profile.is_approved === null || profile.is_approved === undefined
-
-      if (isNewUser) {
-        // ตั้งค่า is_approved = false สำหรับ user ใหม่
-        const { error: upsertError } = await supabase
-          .from('profiles')
-          .upsert({
-            id: data.user.id,
-            email: data.user.email,
-            is_approved: false,
-            full_name: fullName,
-            role: 'user'
-          }, { onConflict: 'id' })
-
-        if (upsertError) {
-          console.error('Profile upsert error:', upsertError)
-        }
-
-        // ตรวจสอบว่ามี employee record อยู่แล้วหรือไม่
-        const { data: existingEmployee } = await supabase
-          .from('employees')
-          .select('id')
-          .eq('user_id', data.user.id)
-          .maybeSingle()
-
-        // สร้าง employee record สำหรับรออนุมัติ (ถ้ายังไม่มี)
-        if (!existingEmployee) {
-          const { error: empError } = await supabase
-            .from('employees')
-            .insert([{
-              name: fullName,
-              user_id: data.user.id,
-              is_active: false,
-              department_id: null,
-            }])
-
-          if (empError) {
-            console.error('Employee creation error:', empError)
-          }
-        }
-
-        // Redirect ไปหน้ารออนุมัติพร้อม email
-        return NextResponse.redirect(`${origin}/auth/pending?email=${encodeURIComponent(data.user.email || '')}`)
-      }
-
-      // ถ้ายังไม่ได้รับการอนุมัติ และไม่ใช่ admin/owner
-      if (!profile.is_approved && profile.role !== 'admin' && profile.role !== 'owner') {
-        return NextResponse.redirect(`${origin}/auth/pending?email=${encodeURIComponent(data.user.email || '')}`)
-      }
-
-      // ผ่านการอนุมัติแล้ว หรือเป็น admin/owner
-      return NextResponse.redirect(`${origin}/home`)
-    } catch (err) {
-      console.error('Callback processing error:', err)
-      return NextResponse.redirect(`${origin}/auth/login?error=server_error`)
-    }
+  // Validate state to prevent CSRF
+  if (!code || !state || !storedState || !codeVerifier || state !== storedState) {
+    return NextResponse.redirect(new URL('/auth/login?error=oauth_failed', request.url))
   }
 
-  return NextResponse.redirect(`${origin}/auth/login`)
+  try {
+    const tokens = await googleClient.validateAuthorizationCode(code, codeVerifier)
+    const idToken = tokens.idToken()
+
+    const claims = decodeIdToken(idToken) as {
+      sub: string
+      email: string
+      name?: string
+    }
+
+    if (!claims.sub || typeof claims.sub !== 'string') {
+      throw new Error('Invalid Google token: missing sub')
+    }
+    if (!claims.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(claims.email)) {
+      throw new Error('Invalid Google token: invalid email')
+    }
+    if (claims.name && claims.name.length > 200) {
+      claims.name = claims.name.slice(0, 200)
+    }
+
+    const { user, accessToken, refreshToken } = await handleGoogleUser(
+      claims.sub,
+      claims.email,
+      claims.name ?? null
+    )
+
+    const isAdmin = user.role === 'admin' || user.role === 'owner'
+    const isApproved = isAdmin || user.isApproved
+
+    const redirectUrl = isApproved ? '/home' : '/auth/pending'
+    const response = NextResponse.redirect(new URL(redirectUrl, request.url))
+
+    setAuthCookies(response, accessToken, refreshToken)
+
+    // Clear oauth cookies
+    response.cookies.set('oauth_state', '', { maxAge: 0, path: '/' })
+    response.cookies.set('oauth_verifier', '', { maxAge: 0, path: '/' })
+
+    return response
+  } catch (error) {
+    console.error('OAuth callback error:', error instanceof Error ? error.message : error)
+    return NextResponse.redirect(new URL('/auth/login?error=oauth_failed', request.url))
+  }
 }

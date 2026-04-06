@@ -1,18 +1,14 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 
 export default function PendingContent() {
-  const supabase = createClient()
   const searchParams = useSearchParams()
   const [status, setStatus] = useState<'loading' | 'pending' | 'approved' | 'not_found'>('loading')
   const [email, setEmail] = useState('')
-  const [fullName, setFullName] = useState('')
 
-  // รับ email จาก query params (กรณีมาจากหน้า register)
   const emailFromUrl = searchParams?.get('email') || ''
 
   useEffect(() => {
@@ -20,10 +16,10 @@ export default function PendingContent() {
 
     async function checkStatus() {
       try {
-        const { data: { user }, error: userError } = await supabase.auth.getUser()
+        const res = await fetch('/api/profiles/me')
 
-        // ถ้าไม่ได้ login แต่มี email ใน URL → แสดงสถานะรออนุมัติ
-        if (!user) {
+        if (!res.ok) {
+          // Not logged in
           if (emailFromUrl) {
             if (isMounted) {
               setEmail(emailFromUrl)
@@ -35,33 +31,19 @@ export default function PendingContent() {
           return
         }
 
-        if (isMounted) {
-          setEmail(user.email || '')
-          setFullName(user.user_metadata?.full_name || user.email?.split('@')[0] || '')
-        }
-
-        const { data: profile, error } = await supabase
-          .from('profiles')
-          .select('is_approved, role')
-          .eq('id', user.id)
-          .maybeSingle()
-
-        // Admin/Owner อนุมัติอัตโนมัติ
-        if (profile?.role === 'admin' || profile?.role === 'owner') {
-          if (isMounted) setStatus('approved')
+        const { user } = await res.json()
+        if (!user) {
+          if (isMounted) setStatus('not_found')
           return
         }
 
-        // is_approved = true หรือ null (user เก่า) → อนุมัติแล้ว
-        if (profile?.is_approved === true || profile?.is_approved === null) {
-          if (isMounted) setStatus('approved')
-        } else {
-          // ถ้าไม่มี profile หรือ is_approved = false → รออนุมัติ
-          if (isMounted) setStatus('pending')
-        }
-      } catch (error) {
-        console.error('Error checking status:', error)
-        // ถ้ามี email ใน URL ให้แสดงสถานะรออนุมัติ ไม่ใช่ not_found
+        if (isMounted) setEmail(user.email || emailFromUrl)
+
+        const isAdmin = user.role === 'admin' || user.role === 'owner'
+        const isApproved = isAdmin || user.isApproved
+
+        if (isMounted) setStatus(isApproved ? 'approved' : 'pending')
+      } catch {
         if (emailFromUrl && isMounted) {
           setEmail(emailFromUrl)
           setStatus('pending')
@@ -73,7 +55,6 @@ export default function PendingContent() {
 
     checkStatus()
 
-    // Poll ทุก 5 วินาที
     const interval = setInterval(checkStatus, 5000)
     return () => {
       isMounted = false
@@ -82,15 +63,10 @@ export default function PendingContent() {
   }, [emailFromUrl])
 
   const handleLogout = async () => {
-    await supabase.auth.signOut()
+    await fetch('/api/auth/logout', { method: 'POST' })
     window.location.href = '/auth/login'
   }
 
-  const handleGoHome = () => {
-    window.location.href = '/home'
-  }
-
-  // กำลังโหลด
   if (status === 'loading') {
     return (
       <main className="min-h-dvh grid place-items-center p-6 bg-gray-50">
@@ -102,7 +78,6 @@ export default function PendingContent() {
     )
   }
 
-  // ได้รับการอนุมัติแล้ว
   if (status === 'approved') {
     return (
       <main className="min-h-dvh grid place-items-center p-6 bg-gray-50">
@@ -116,13 +91,10 @@ export default function PendingContent() {
             <h1 className="text-2xl font-semibold text-gray-900 tracking-tight">ได้รับการอนุมัติแล้ว!</h1>
             <p className="text-sm text-gray-500 mt-1">บัญชีของคุณพร้อมใช้งานแล้ว</p>
           </div>
-
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
-            <p className="text-center text-gray-600">
-              คุณสามารถเข้าสู่ระบบและใช้งานได้แล้ว
-            </p>
+            <p className="text-center text-gray-600">คุณสามารถเข้าสู่ระบบและใช้งานได้แล้ว</p>
             <button
-              onClick={handleGoHome}
+              onClick={() => { window.location.href = '/home' }}
               className="block w-full py-2.5 px-4 rounded-xl text-sm font-medium text-center text-white bg-gray-900 hover:bg-gray-800 transition-all"
             >
               ไปหน้าหลัก
@@ -133,7 +105,6 @@ export default function PendingContent() {
     )
   }
 
-  // ยังไม่ได้ login
   if (status === 'not_found') {
     return (
       <main className="min-h-dvh grid place-items-center p-6 bg-gray-50">
@@ -145,10 +116,7 @@ export default function PendingContent() {
           </div>
           <h1 className="text-2xl font-semibold text-gray-900 tracking-tight">กรุณาเข้าสู่ระบบ</h1>
           <p className="text-sm text-gray-500 mt-1 mb-6">คุณยังไม่ได้เข้าสู่ระบบ</p>
-          <Link
-            href="/auth/login"
-            className="inline-block py-2.5 px-6 rounded-xl text-sm font-medium text-white bg-gray-900 hover:bg-gray-800 transition-all"
-          >
+          <Link href="/auth/login" className="inline-block py-2.5 px-6 rounded-xl text-sm font-medium text-white bg-gray-900 hover:bg-gray-800 transition-all">
             เข้าสู่ระบบ
           </Link>
         </div>
@@ -156,7 +124,6 @@ export default function PendingContent() {
     )
   }
 
-  // รออนุมัติ (status === 'pending')
   return (
     <main className="min-h-dvh grid place-items-center p-6 bg-gray-50">
       <div className="w-full max-w-sm">
@@ -172,7 +139,7 @@ export default function PendingContent() {
 
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
           <div className="flex items-start gap-3 p-4 rounded-xl bg-amber-50 border border-amber-100">
-            <svg className="w-5 h-5 text-amber-500 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <svg className="w-5 h-5 text-amber-500 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
             <div className="text-sm text-amber-800">
@@ -186,10 +153,7 @@ export default function PendingContent() {
 
           {email && (
             <div className="space-y-2 text-sm text-gray-600">
-              <p>
-                <span className="font-medium text-gray-900">Email: </span>
-                {email}
-              </p>
+              <p><span className="font-medium text-gray-900">Email: </span>{email}</p>
               <p>
                 <span className="font-medium text-gray-900">สถานะ: </span>
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 text-xs font-medium">

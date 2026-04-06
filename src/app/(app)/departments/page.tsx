@@ -1,49 +1,42 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
 import {
-  LayoutGrid,
-  Plus,
-  Trash2,
-  ArrowLeft,
-  Palette,
-  Loader2,
-  CheckCircle2,
-  Edit3,
-  X
+  LayoutGrid, Plus, Trash2, ArrowLeft, Palette,
+  Loader2, CheckCircle2, Edit3, X
 } from "lucide-react";
 
 interface Department {
-  id: string;
+  _id: string;
   name: string;
-  color_code: string;
-  created_at: string;
+  colorCode: string;
+  createdAt: string;
 }
 
 export default function DepartmentsPage() {
   const router = useRouter();
-  const supabase = useMemo(() => createClient(), []);
 
   const [departments, setDepartments] = useState<Department[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [loading, setLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const [name, setName] = useState<string>("");
-  const [color, setColor] = useState<string>("#3b82f6");
-
-  const [isEditing, setIsEditing] = useState<boolean>(false);
+  const [name, setName] = useState("");
+  const [color, setColor] = useState("#3b82f6");
+  const [isEditing, setIsEditing] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
 
   const fetchDepartments = async () => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from("departments")
-      .select("*")
-      .order("created_at", { ascending: false });
-    if (!error && data) setDepartments(data as Department[]);
-    setLoading(false);
+    try {
+      const res = await fetch('/api/departments');
+      if (res.ok) {
+        const { departments } = await res.json();
+        setDepartments(departments);
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => { fetchDepartments(); }, []);
@@ -53,29 +46,39 @@ export default function DepartmentsPage() {
   };
 
   const handleEditClick = (dept: Department) => {
-    setIsEditing(true); setEditId(dept.id); setName(dept.name); setColor(dept.color_code);
+    setIsEditing(true); setEditId(dept._id); setName(dept.name); setColor(dept.colorCode);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!name.trim()) return;
+    setIsSubmitting(true);
     try {
-      setIsSubmitting(true);
       if (isEditing && editId) {
-        const { error } = await supabase.from("departments").update({ name: name.trim(), color_code: color }).eq("id", editId);
-        if (error) throw error;
+        const res = await fetch(`/api/departments/${editId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name.trim(), colorCode: color }),
+        });
+        if (!res.ok) throw new Error('Update failed');
       } else {
-        const { error } = await supabase.from("departments").insert([{ name: name.trim(), color_code: color }]);
-        if (error) {
-          if (error.code === '23505') return alert("มีชื่อแผนกนี้อยู่ในระบบแล้ว");
-          throw error;
+        const res = await fetch('/api/departments', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name.trim(), colorCode: color }),
+        });
+        if (!res.ok) {
+          const data = await res.json();
+          if (res.status === 409 || data.error?.includes('duplicate')) {
+            return alert("มีชื่อแผนกนี้อยู่ในระบบแล้ว");
+          }
+          throw new Error('Create failed');
         }
       }
       resetForm();
       fetchDepartments();
-    } catch (err) {
-      console.error(err);
+    } catch {
       alert(isEditing ? "ไม่สามารถแก้ไขข้อมูลได้" : "ไม่สามารถเพิ่มแผนกได้");
     } finally {
       setIsSubmitting(false);
@@ -84,8 +87,8 @@ export default function DepartmentsPage() {
 
   const handleDelete = async (id: string, deptName: string) => {
     if (!confirm(`ยืนยันการลบแผนก "${deptName}"?\n*พนักงานในแผนกนี้จะกลายเป็น 'ไม่มีแผนก'`)) return;
-    const { error } = await supabase.from("departments").delete().eq("id", id);
-    if (error) { alert("ไม่สามารถลบได้เนื่องจากมีการใช้งานอยู่"); }
+    const res = await fetch(`/api/departments/${id}`, { method: 'DELETE' });
+    if (!res.ok) { alert("ไม่สามารถลบได้เนื่องจากมีการใช้งานอยู่"); }
     else { if (editId === id) resetForm(); fetchDepartments(); }
   };
 
@@ -204,18 +207,18 @@ export default function DepartmentsPage() {
               ) : departments.length > 0 ? (
                 departments.map((dept) => (
                   <div
-                    key={dept.id}
-                    className={`p-5 flex items-center justify-between hover:bg-slate-50 transition-colors group ${editId === dept.id ? 'bg-orange-50/50' : ''}`}
+                    key={dept._id}
+                    className={`p-5 flex items-center justify-between hover:bg-slate-50 transition-colors group ${editId === dept._id ? 'bg-orange-50/50' : ''}`}
                   >
                     <div className="flex items-center gap-4">
                       <div
-                        className="w-12 h-12 rounded-2xl shadow-inner border-4 border-white flex-shrink-0"
-                        style={{ backgroundColor: dept.color_code }}
+                        className="w-12 h-12 rounded-2xl shadow-inner border-4 border-white shrink-0"
+                        style={{ backgroundColor: dept.colorCode }}
                       />
                       <div>
                         <div className="font-black text-slate-900 text-base md:text-lg leading-tight">{dept.name}</div>
                         <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                          Code: {dept.color_code}
+                          Code: {dept.colorCode}
                         </div>
                       </div>
                     </div>
@@ -224,14 +227,12 @@ export default function DepartmentsPage() {
                       <button
                         onClick={() => handleEditClick(dept)}
                         className="p-3 text-slate-300 hover:text-orange-500 hover:bg-orange-50 rounded-xl transition-all"
-                        title="แก้ไขแผนก"
                       >
                         <Edit3 size={20} />
                       </button>
                       <button
-                        onClick={() => handleDelete(dept.id, dept.name)}
+                        onClick={() => handleDelete(dept._id, dept.name)}
                         className="p-3 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all"
-                        title="ลบแผนก"
                       >
                         <Trash2 size={20} />
                       </button>

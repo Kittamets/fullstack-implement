@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useMemo, useState, useEffect, useRef } from "react";
-import { createClient } from "@/lib/supabase/client";
 import {
     Search, X, Tag, Package, Pencil, Trash2, 
     Plus, LayoutGrid, GripVertical, Eye, EyeOff, ChevronDown, Clock
@@ -19,8 +18,21 @@ interface Product {
     updated_at: string;
 }
 
+function normalizeProduct(p: Record<string, unknown>): Product {
+    return {
+        id: String(p._id),
+        name: String(p.name ?? ''),
+        category: String(p.category ?? ''),
+        detail: p.detail ? String(p.detail) : undefined,
+        price1: Number(p.price1 ?? 0),
+        price2: Number(p.price2 ?? 0),
+        price3: Number(p.price3 ?? 0),
+        is_visible: Boolean(p.isVisible ?? p.visible ?? true),
+        updated_at: p.updatedAt ? String(p.updatedAt) : String(p.createdAt ?? ''),
+    }
+}
+
 export default function PricePage() {
-    const supabase = createClient();
     const [products, setProducts] = useState<Product[]>([]);
     const [categories, setCategories] = useState<string[]>([]);
     const [selectedCategory, setSelectedCategory] = useState('all');
@@ -73,32 +85,33 @@ export default function PricePage() {
     const handleDragEnd = () => { setDraggedItemIndex(null); localStorage.setItem('category_priority', JSON.stringify(categories)); };
 
     const fetchProducts = async () => {
-        const { data, error } = await supabase.from("products").select("*").order("updated_at", { ascending: false });
-        if (!error && data) {
-            const fetchedProducts = data as Product[];
-            setProducts(fetchedProducts);
-            const uniqueCats = Array.from(new Set(fetchedProducts.map((p) => p.category))).filter(Boolean) as string[];
-            const savedPriority = localStorage.getItem('category_priority');
-            if (savedPriority) {
-                const priorityArray = JSON.parse(savedPriority) as string[];
-                const sortedCats = priorityArray.filter((c) => uniqueCats.includes(c));
-                const newCats = uniqueCats.filter(c => !priorityArray.includes(c));
-                setCategories([...sortedCats, ...newCats]);
-            } else { setCategories(uniqueCats.sort()); }
-        }
+        const res = await fetch('/api/products');
+        if (!res.ok) return;
+        const { products: data } = await res.json();
+        const fetchedProducts = (data as Record<string, unknown>[]).map(normalizeProduct);
+        setProducts(fetchedProducts);
+        const uniqueCats = Array.from(new Set(fetchedProducts.map((p) => p.category))).filter(Boolean) as string[];
+        const savedPriority = localStorage.getItem('category_priority');
+        if (savedPriority) {
+            const priorityArray = JSON.parse(savedPriority) as string[];
+            const sortedCats = priorityArray.filter((c) => uniqueCats.includes(c));
+            const newCats = uniqueCats.filter(c => !priorityArray.includes(c));
+            setCategories([...sortedCats, ...newCats]);
+        } else { setCategories(uniqueCats.sort()); }
     };
 
     const handleEditCategory = async (oldName: string) => {
         const newName = prompt("แก้ไขชื่อหมวดหมู่:", oldName);
         if (!newName || newName === oldName) return;
 
-        const { error } = await supabase
-            .from("products")
-            .update({ category: newName })
-            .eq("category", oldName);
+        const res = await fetch(`/api/products/${encodeURIComponent(oldName)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ updateCategory: true, oldName, newName }),
+        });
 
-        if (error) {
-            alert("ไม่สามารถแก้ไขได้: " + error.message);
+        if (!res.ok) {
+            alert("ไม่สามารถแก้ไขได้");
         } else {
             const savedPriority = localStorage.getItem('category_priority');
             if (savedPriority) {
@@ -113,13 +126,14 @@ export default function PricePage() {
 
     const handleDeleteCategory = async (catName: string) => {
         if (confirm(`คุณแน่ใจหรือไม่ที่จะลบหมวดหมู่ "${catName}"?\n** คำเตือน: สินค้าทั้งหมดในหมวดนี้จะถูกลบไปด้วย **`)) {
-            const { error } = await supabase
-                .from("products")
-                .delete()
-                .eq("category", catName);
+            const res = await fetch(`/api/products/${encodeURIComponent(catName)}`, {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ deleteCategory: true }),
+            });
 
-            if (error) {
-                alert("ลบไม่สำเร็จ: " + error.message);
+            if (!res.ok) {
+                alert("ลบไม่สำเร็จ");
             } else {
                 const savedPriority = localStorage.getItem('category_priority');
                 if (savedPriority) {
@@ -135,11 +149,11 @@ export default function PricePage() {
 
     useEffect(() => {
         async function checkAuth() {
-            const { data: { user } } = await supabase.auth.getUser();
-            if (user) {
-                const { data: profile } = await supabase.from("profiles").select("role").eq("id", user.id).single();
-                setUserRole(profile?.role || 'admin');
-            } else { setUserRole('admin'); }
+            const res = await fetch('/api/profiles/me');
+            if (res.ok) {
+                const { user } = await res.json();
+                setUserRole(user?.role || 'user');
+            }
             await fetchProducts();
             setLoading(false);
         }
@@ -151,9 +165,13 @@ export default function PricePage() {
         return () => document.removeEventListener("mousedown", handleClickOutside);
     }, []);
 
-    const toggleVisibility = async (id: string, currentStatus: boolean) => {
-        const { error } = await supabase.from("products").update({ is_visible: !currentStatus }).eq("id", id);
-        if (!error) { fetchProducts(); }
+    const toggleVisibility = async (id: string) => {
+        const res = await fetch(`/api/products/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ toggleVisibility: true }),
+        });
+        if (res.ok) { fetchProducts(); }
     };
 
     const handleSaveProduct = async (e: React.FormEvent) => {
@@ -161,17 +179,23 @@ export default function PricePage() {
         const payload = {
             name: formData.name, category: formData.category, detail: formData.detail,
             price1: Number(formData.price1) || 0, price2: Number(formData.price2) || 0, price3: Number(formData.price3) || 0,
-            updated_at: new Date().toISOString()
         };
-        if (editingId) { await supabase.from("products").update(payload).eq("id", editingId);
-        } else { await supabase.from("products").insert([{ ...payload, is_visible: true }]); }
+        if (editingId) {
+            await fetch(`/api/products/${editingId}`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+            });
+        } else {
+            await fetch('/api/products', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+            });
+        }
         setShowFormModal(false); setEditingId(null); fetchProducts();
     };
 
     const handleDeleteProduct = async (id: string) => {
         if (confirm("คุณแน่ใจหรือไม่ที่จะลบสินค้านี้?")) {
-            const { error } = await supabase.from("products").delete().eq("id", id);
-            if (error) { alert("ลบไม่สำเร็จ: " + error.message); } else { fetchProducts(); }
+            const res = await fetch(`/api/products/${id}`, { method: 'DELETE' });
+            if (!res.ok) { alert("ลบไม่สำเร็จ"); } else { fetchProducts(); }
         }
     };
 
@@ -311,7 +335,7 @@ export default function PricePage() {
 
                                             {isOwner && (
                                                 <div className="flex gap-1">
-                                                    <button onClick={() => toggleVisibility(p.id, p.is_visible)} className="p-2 text-blue-400 hover:bg-blue-50 rounded-xl transition-all">{!p.is_visible ? <EyeOff size={16} /> : <Eye size={16} />}</button>
+                                                    <button onClick={() => toggleVisibility(p.id)} className="p-2 text-blue-400 hover:bg-blue-50 rounded-xl transition-all">{!p.is_visible ? <EyeOff size={16} /> : <Eye size={16} />}</button>
                                                     <button onClick={() => { setEditingId(p.id); setFormData({name: p.name, category: p.category, detail: p.detail || '', price1: String(p.price1), price2: String(p.price2), price3: String(p.price3)}); setShowFormModal(true); }} className="p-2 text-orange-400 hover:bg-orange-50 rounded-xl transition-all"><Pencil size={16} /></button>
                                                     <button onClick={() => handleDeleteProduct(p.id)} className="p-2 text-rose-400 hover:bg-rose-50 rounded-xl transition-all"><Trash2 size={16} /></button>
                                                 </div>

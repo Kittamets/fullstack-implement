@@ -1,6 +1,8 @@
-import { createClient } from '@/lib/supabase/server'
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-import LogoutButton from '@/components/ui/LogoutButton'
+'use client'
+
+import { useEffect, useState } from 'react'
+import { Avatar, AvatarFallback } from '@/frontend/components/ui/avatar'
+import LogoutButton from '@/frontend/components/ui/LogoutButton'
 import { Mail, ShieldCheck, Settings as SettingsIcon } from 'lucide-react'
 
 function initials(nameOrEmail?: string) {
@@ -12,19 +14,26 @@ function initials(nameOrEmail?: string) {
   return (a[0] + (b[0] ?? '')).toUpperCase()
 }
 
-export default async function SettingsPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+export default function SettingsPage() {
+  const [userInfo, setUserInfo] = useState({ email: '', role: 'user', fullName: '' })
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role')
-    .eq('id', user?.id)
-    .single()
+  useEffect(() => {
+    fetch('/api/profiles/me')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.user) {
+          setUserInfo({
+            email: data.user.email ?? '',
+            role: data.user.role ?? 'user',
+            fullName: data.user.fullName ?? '',
+          })
+        }
+      })
+      .catch(() => {})
+  }, [])
 
-  const name = (user?.user_metadata?.full_name as string) || user?.email || 'User'
-  const avatarUrl = user?.user_metadata?.avatar_url as string | undefined
-  const role = profile?.role || 'user'
+  const name = userInfo.fullName || userInfo.email || 'User'
+  const role = userInfo.role
 
   return (
     <div className="min-h-screen bg-slate-50/50 flex justify-center p-4 md:p-8">
@@ -46,7 +55,6 @@ export default async function SettingsPage() {
           <div className="relative z-10 flex flex-col md:flex-row items-center gap-6 md:gap-8">
             <div className="relative">
               <Avatar className="h-24 w-24 border-4 border-white shadow-xl">
-                <AvatarImage src={avatarUrl} alt={name} />
                 <AvatarFallback className="bg-slate-900 text-white text-2xl font-black">
                   {initials(name)}
                 </AvatarFallback>
@@ -62,7 +70,7 @@ export default async function SettingsPage() {
                 </span>
               </div>
               <p className="text-slate-500 font-bold flex items-center justify-center md:justify-start gap-2">
-                <Mail size={16} /> {user?.email}
+                <Mail size={16} /> {userInfo.email}
               </p>
             </div>
 

@@ -1,16 +1,15 @@
 'use client';
 
-import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import {
   Navigation, Loader2, ExternalLink, X, Clock, MapPin,
   Building2, Search, ChevronDown, LocateFixed, PlayCircle, CheckCircle2,
   Timer, CalendarRange, Camera,
 } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
-import type { MapTask, MapComponentProps } from './MapComponent';
-import PhotoUploadModal from '@/components/PhotoUploadModal';
-import { uploadWorkPhoto } from '@/lib/uploadWorkPhoto';
+import type { MapTask, MapComponentProps } from '@/frontend/components/MapComponent';
+import PhotoUploadModal from '@/frontend/components/PhotoUploadModal';
+import { uploadWorkPhoto } from '@/frontend/lib/uploadWorkPhoto';
 
 interface Employee {
   id: string;
@@ -40,8 +39,29 @@ interface WorkScheduleRow {
 
 interface Department { name: string; color_code: string; }
 
+function normalizeWorkRow(w: Record<string, unknown>): WorkScheduleRow {
+  return {
+    id: String(w._id),
+    detail: String(w.detail ?? ''),
+    department: String(w.department ?? ''),
+    work_date: w.workDate ? String(w.workDate).substring(0, 10) : '',
+    end_date: w.endDate ? String(w.endDate).substring(0, 10) : null,
+    work_time: String(w.workTime ?? ''),
+    worker: String(w.worker ?? ''),
+    worker_role: String(w.workerRole ?? ''),
+    status: (w.status as WorkScheduleRow['status']) ?? 'pending',
+    lat: (w.lat as number) ?? null,
+    lng: (w.lng as number) ?? null,
+    started_at: w.startedAt ? String(w.startedAt) : null,
+    completed_at: w.completedAt ? String(w.completedAt) : null,
+    employee_ids: Array.isArray(w.employeeIds) ? (w.employeeIds as unknown[]).map(String) : null,
+    start_photo_url: w.startPhotoUrl ? String(w.startPhotoUrl) : null,
+    complete_photo_url: w.completePhotoUrl ? String(w.completePhotoUrl) : null,
+  }
+}
+
 const MapComponent = dynamic<MapComponentProps>(
-  () => import('./MapComponent'),
+  () => import('../../../frontend/components/MapComponent'),
   {
     ssr: false,
     loading: () => (
@@ -113,7 +133,6 @@ function isMultiDay(work: WorkScheduleRow): boolean {
 }
 
 export default function MapPage() {
-  const supabase = useMemo(() => createClient(), []);
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -159,31 +178,44 @@ export default function MapPage() {
   useEffect(() => {
     const init = async () => {
       setLoading(true);
-      const { data: { user: authUser } } = await supabase.auth.getUser();
-      if (!authUser) return;
-
-      const [{ data: profile }, { data: employee }, { data: empsData }, { data: deptsData }] = await Promise.all([
-        supabase.from('profiles').select('role').eq('id', authUser.id).single(),
-        supabase.from('employees').select('id').eq('user_id', authUser.id).single(),
-        supabase.from('employees').select('id, name, image_url, departments:department_id(name, color_code)').eq('is_active', true),
-        supabase.from('departments').select('name, color_code'),
+      const [profileRes, empsRes, deptsRes] = await Promise.all([
+        fetch('/api/profiles/me'),
+        fetch('/api/employees?active=true'),
+        fetch('/api/departments'),
       ]);
+      if (!profileRes.ok) { setLoading(false); return; }
 
-      const admin = profile?.role === 'admin';
-      const empId = employee?.id ?? null;
+      const { user: profile } = await profileRes.json();
+      const admin = profile?.role === 'admin' || profile?.role === 'owner';
+      const empId = profile?.employeeId ?? null;
       setIsAdmin(admin);
-      setEmployees((empsData ?? []) as unknown as Employee[]);
 
-      const colorMap = ((deptsData ?? []) as Department[]).reduce((acc, d) => {
-        acc[d.name] = d.color_code; return acc;
-      }, {} as Record<string, string>);
-      setDeptColorMap(colorMap);
+      if (empsRes.ok) {
+        const { employees: empsData } = await empsRes.json();
+        setEmployees((empsData as Record<string, unknown>[]).map(e => {
+          const dept = e.departmentId as Record<string, unknown> | null;
+          return {
+            id: String(e._id),
+            name: String(e.name ?? ''),
+            image_url: e.imageUrl ? String(e.imageUrl) : null,
+            departments: dept ? { name: String(dept.name ?? ''), color_code: String(dept.colorCode ?? '') } : null,
+          } as Employee;
+        }));
+      }
+
+      if (deptsRes.ok) {
+        const { departments: deptsData } = await deptsRes.json();
+        const colorMap = (deptsData as Record<string, unknown>[]).reduce((acc: Record<string, string>, d) => {
+          acc[String(d.name)] = String(d.colorCode ?? ''); return acc;
+        }, {});
+        setDeptColorMap(colorMap);
+      }
 
       if (!admin && empId) setSelectedEmployeeId(empId);
       setLoading(false);
     };
     init();
-  }, [supabase]);
+  }, []);
 
   // ────────────────────────────────────────────────
   // Fetch works
@@ -198,14 +230,14 @@ export default function MapPage() {
       }
 
       const today = todayStr();
-      const { data } = await supabase
-        .from('work_schedule')
-        .select('*')
-        .contains('employee_ids', [targetId])
-        .lte('work_date', today)
-        .or(`end_date.gte.${today},end_date.is.null,work_date.gte.${today}`);
-
-      const rows = (data ?? []) as WorkScheduleRow[];
+      const wsRes = await fetch(`/api/work-schedule?employeeId=${targetId}`);
+      if (!wsRes.ok) return;
+      const { schedules: rawData } = await wsRes.json();
+      const allRows = (rawData as Record<string, unknown>[]).map(normalizeWorkRow);
+      const rows = allRows.filter(w => {
+        const effectiveEnd = w.end_date || w.work_date;
+        return w.work_date <= today && effectiveEnd >= today;
+      });
       const todayRows = rows.filter(w => isActiveOnDate(w, today));
       const activeWorks = todayRows.filter(w => w.status !== 'complete');
       setWorks(activeWorks);
@@ -225,7 +257,7 @@ export default function MapPage() {
       });
     };
     fetchWorks();
-  }, [selectedEmployeeId, supabase]);
+  }, [selectedEmployeeId]);
 
   const handleOrderChange = useCallback((newOrder: MapTask[], isReady: boolean) => {
     if (isReady) {
@@ -256,24 +288,34 @@ export default function MapPage() {
     if (!photoModal) return;
     const { mode, id } = photoModal;
 
-    const photoUrl = await uploadWorkPhoto(supabase, file, id, mode);
+    const photoUrl = await uploadWorkPhoto(file, id, mode);
 
     const status = mode === 'start' ? 'inprogress' : 'complete';
     const updates: Record<string, string> = { status };
     if (mode === 'start') {
-      updates.started_at = new Date().toISOString();
-      updates.start_photo_url = photoUrl;
+      updates.startedAt = new Date().toISOString();
+      updates.startPhotoUrl = photoUrl;
     } else {
-      updates.completed_at = new Date().toISOString();
-      updates.complete_photo_url = photoUrl;
+      updates.completedAt = new Date().toISOString();
+      updates.completePhotoUrl = photoUrl;
     }
 
-    await supabase.from('work_schedule').update(updates).eq('id', id);
+    await fetch(`/api/work-schedule/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
 
+    const snakeUpdates = {
+      started_at: updates.startedAt,
+      start_photo_url: updates.startPhotoUrl,
+      completed_at: updates.completedAt,
+      complete_photo_url: updates.completePhotoUrl,
+    };
     setWorks(prev =>
       status === 'complete'
         ? prev.filter(w => w.id !== id)
-        : prev.map(w => w.id === id ? { ...w, status, ...updates } as WorkScheduleRow : w)
+        : prev.map(w => w.id === id ? { ...w, status, ...snakeUpdates } as WorkScheduleRow : w)
     );
     setMapTasks(prev => prev.map(t => t.id === id ? { ...t, status } : t));
     setOrderedTasks(prev =>
@@ -281,7 +323,7 @@ export default function MapPage() {
         ? prev.filter(t => t.id !== id)
         : prev.map(t => t.id === id ? { ...t, status } : t)
     );
-    setSelectedWork(prev => prev?.id === id ? { ...prev, status, ...updates } as WorkScheduleRow : prev);
+    setSelectedWork(prev => prev?.id === id ? { ...prev, status, ...snakeUpdates } as WorkScheduleRow : prev);
     setPhotoModal(null);
   };
 

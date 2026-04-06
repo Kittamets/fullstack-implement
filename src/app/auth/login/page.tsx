@@ -1,98 +1,83 @@
 'use client'
 
 import { useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { z } from 'zod'
+
+const loginSchema = z.object({
+  email: z
+    .string()
+    .trim()
+    .min(1, 'กรุณากรอกข้อมูลให้ครบถ้วน')
+    .email('รูปแบบอีเมลไม่ถูกต้อง')
+    .max(254, 'อีเมลต้องมีความยาวไม่เกิน 254 ตัวอักษร'),
+  password: z.string().min(1, 'กรุณากรอกข้อมูลให้ครบถ้วน'),
+})
 
 export default function LoginPage() {
-  const supabase = createClient()
   const router = useRouter()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<'email' | 'password', string>>>({})
   const [loading, setLoading] = useState(false)
 
   const handleLogin = async () => {
     setError(null)
+    setFieldErrors({})
 
-    if (!email || !password) {
-      setError('กรุณากรอก Email และ Password')
+    const result = loginSchema.safeParse({ email, password })
+    if (!result.success) {
+      const hasRequired = result.error.issues.some((i) => i.message === 'กรุณากรอกข้อมูลให้ครบถ้วน')
+      if (hasRequired) {
+        setError('กรุณากรอกข้อมูลให้ครบถ้วน')
+        return
+      }
+      const errs: typeof fieldErrors = {}
+      for (const issue of result.error.issues) {
+        const field = issue.path[0] as keyof typeof errs
+        if (!errs[field]) errs[field] = issue.message
+      }
+      setFieldErrors(errs)
       return
     }
 
     setLoading(true)
-
     try {
-      const { data, error: authError } = await supabase.auth.signInWithPassword({ email, password })
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      })
 
-      if (authError) {
-        if (authError.message.includes('Invalid login credentials')) {
-          setError('Email หรือ Password ไม่ถูกต้อง')
-        } else if (authError.message.includes('Email not confirmed')) {
-          setError('Email ยังไม่ได้ยืนยัน กรุณาตรวจสอบอีเมลของคุณ')
+      const data = await res.json()
+
+      if (!res.ok) {
+        if (res.status === 429) {
+          setError(data.error ?? 'Too many attempts. Please try again later.')
         } else {
-          setError(authError.message)
+          setError('Invalid email or password')
         }
         return
       }
 
-      // เช็คว่า user ได้รับการอนุมัติหรือยัง
-      if (data.user) {
-        const { data: profile, error: profileError } = await supabase
-          .from('profiles')
-          .select('is_approved, role')
-          .eq('id', data.user.id)
-          .maybeSingle()
-
-        // ถ้าไม่มี profile → ถือว่ายังไม่ได้อนุมัติ
-        if (!profile && !profileError) {
-          await supabase.auth.signOut()
-          router.push('/auth/pending')
-          return
-        }
-
-        // ตรวจสอบการอนุมัติ (admin/owner อนุมัติอัตโนมัติ)
-        const isAdmin = profile?.role === 'admin' || profile?.role === 'owner'
-        const isApproved = profile?.is_approved === true || profile?.is_approved === null
-
-        if (!isApproved && !isAdmin) {
-          // ยังไม่ได้รับการอนุมัติ
-          await supabase.auth.signOut()
-          router.push(`/auth/pending?email=${encodeURIComponent(data.user.email || '')}`)
-          return
-        }
+      const { user } = data
+      const isAdmin = user.role === 'admin' || user.role === 'owner'
+      if (!isAdmin && !user.isApproved) {
+        router.push(`/auth/pending?email=${encodeURIComponent(email)}`)
+      } else {
+        router.push('/home')
       }
-
-      router.push('/home')
-    } catch (err) {
-      console.error('Login error:', err)
+    } catch {
       setError('เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง')
     } finally {
       setLoading(false)
     }
   }
 
-  const handleGoogleLogin = async () => {
-    setLoading(true)
-    setError(null)
-
-    try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: `${window.location.origin}/auth/callback`,
-        },
-      })
-
-      if (error) {
-        setError(error.message)
-      }
-    } catch {
-      setError('เกิดข้อผิดพลาดในการเชื่อมต่อ Google')
-    } finally {
-      setLoading(false)
-    }
+  const handleGoogleLogin = () => {
+    window.location.href = '/api/auth/google'
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -113,12 +98,9 @@ export default function LoginPage() {
         </div>
 
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
-          {/* Email Form */}
           <div className="space-y-3">
             <div className="space-y-1.5">
-              <label htmlFor="email" className="block text-sm font-medium text-gray-700">
-                Email
-              </label>
+              <label htmlFor="email" className="block text-sm font-medium text-gray-700">อีเมล</label>
               <input
                 id="email"
                 type="email"
@@ -126,13 +108,12 @@ export default function LoginPage() {
                 onChange={(e) => setEmail(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="your@email.com"
-                className="w-full px-3.5 py-2.5 text-sm rounded-xl border border-gray-200 bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent transition-all placeholder:text-gray-300"
+                className={`w-full px-3.5 py-2.5 text-sm rounded-xl border bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:border-transparent transition-all placeholder:text-gray-300 ${fieldErrors.email ? 'border-red-300 focus:ring-red-400' : 'border-gray-200 focus:ring-gray-900'}`}
               />
+              {fieldErrors.email && <p className="text-xs text-red-500">{fieldErrors.email}</p>}
             </div>
             <div className="space-y-1.5">
-              <label htmlFor="password" className="block text-sm font-medium text-gray-700">
-                Password
-              </label>
+              <label htmlFor="password" className="block text-sm font-medium text-gray-700">รหัสผ่าน</label>
               <input
                 id="password"
                 type="password"
@@ -140,8 +121,9 @@ export default function LoginPage() {
                 onChange={(e) => setPassword(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="••••••••"
-                className="w-full px-3.5 py-2.5 text-sm rounded-xl border border-gray-200 bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent transition-all placeholder:text-gray-300"
+                className={`w-full px-3.5 py-2.5 text-sm rounded-xl border bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:border-transparent transition-all placeholder:text-gray-300 ${fieldErrors.password ? 'border-red-300 focus:ring-red-400' : 'border-gray-200 focus:ring-gray-900'}`}
               />
+              {fieldErrors.password && <p className="text-xs text-red-500">{fieldErrors.password}</p>}
             </div>
           </div>
 
@@ -182,11 +164,10 @@ export default function LoginPage() {
               <div className="w-full border-t border-gray-200"></div>
             </div>
             <div className="relative flex justify-center text-xs">
-              <span className="px-2 bg-white text-gray-400">หรือ</span>
+              <span className="px-2 bg-white text-gray-400">or</span>
             </div>
           </div>
 
-          {/* Google Login */}
           <button
             onClick={handleGoogleLogin}
             disabled={loading}
@@ -203,7 +184,7 @@ export default function LoginPage() {
         </div>
 
         <p className="text-center text-xs text-gray-400 mt-5">
-          หากลืมรหัสผ่าน กรุณาติดต่อผู้ดูแลระบบ
+          If forget password, Please contact our admin
         </p>
       </div>
     </main>
