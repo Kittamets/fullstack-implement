@@ -145,7 +145,7 @@ export default function PhotoUploadModal({ mode, jobDetail, onConfirm, onCancel,
           <input
             ref={cameraInputRef}
             type="file"
-            accept="image/*"
+            accept="image/jpeg,image/png,image/webp,image/heic"
             capture="environment"
             className="hidden"
             onChange={handleFileChange}
@@ -153,7 +153,7 @@ export default function PhotoUploadModal({ mode, jobDetail, onConfirm, onCancel,
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
+            accept="image/jpeg,image/png,image/webp,image/heic"
             className="hidden"
             onChange={handleFileChange}
           />

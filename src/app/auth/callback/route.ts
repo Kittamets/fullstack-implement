@@ -47,7 +47,8 @@ export async function GET(request: NextRequest) {
     const isApproved = isAdmin || user.isApproved
 
     const redirectUrl = isApproved ? '/home' : '/auth/pending'
-    const response = NextResponse.redirect(new URL(redirectUrl, request.url))
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? request.url
+    const response = NextResponse.redirect(new URL(redirectUrl, baseUrl))
 
     setAuthCookies(response, accessToken, refreshToken)
 
